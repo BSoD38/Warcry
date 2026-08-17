@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+
+  <!-- Manifest fields. csproj-only by design: NEVER add a Warcry.json beside this file,
+       DalamudPackager would silently ignore everything below. See docs/PLAN.md 3.6. -->
+  <PropertyGroup>
+    <Version>0.1.0.0</Version>
+    <Author>BSoD38</Author>
+    <Name>Warcry</Name>
+    <Punchline>Play your own voicelines when you use an action.</Punchline>
+    <Description>Plays user-supplied audio clips in 3D space when you use actions. Clips are mapped per action and per character voice type from an in-game editor.</Description>
+    <!-- TODO before any release: set RepoUrl once the remote exists. It is optional for
+         a local build (DalamudPackager only requires Name, Author, Description, Punchline)
+         but it is the only "visit the repo" link users get, and it must be present in the
+         pluginmaster entry. Deliberately absent rather than guessed. -->
+    <!-- <RepoUrl>https://github.com/BSoD38/Warcry</RepoUrl> -->
+    <Tags>audio;voice;combat;roleplay</Tags>
+    <!-- Inert for third-party repos: PluginInstallerWindow hard-disables the feedback
+         button when SourceRepo.IsThirdParty, regardless of this value. Set false so the
+         manifest doesn't advertise something users can't do. Point them at RepoUrl. -->
+    <AcceptsFeedback>false</AcceptsFeedback>
+  </PropertyGroup>
+
+  <!-- Everything else (net10.0-windows, LangVersion 14, x64, nullable, unsafe blocks,
+       lock file, DalamudPackager, and the eleven Private=false Dalamud references)
+       comes from Dalamud.NET.Sdk/15.0.0. Do not set them here. -->
+
+  <ItemGroup>
+    <!-- Pin 2.x. NAudio 3.0.0 (2026-08-15) is a hard breaking release:
+         Read(byte[],int,int) -> Read(Span<byte>), WaveOutEvent -> WaveOut,
+         DesiredLatency -> BufferMilliseconds, assembly split. See docs/PLAN.md 5.6. -->
+    <PackageReference Include="NAudio" Version="2.3.0" />
+    <PackageReference Include="NAudio.Vorbis" Version="1.5.0" />
+  </ItemGroup>
+
+</Project>

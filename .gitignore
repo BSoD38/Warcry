@@ -1,0 +1,32 @@
+## Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+*.dll
+*.pdb
+
+## IDE
+.vs/
+.idea/
+*.user
+*.suo
+*.userprefs
+.DS_Store
+
+## NuGet
+*.nupkg
+packages/
+
+# NOTE: packages.lock.json MUST be committed.
+# Dalamud.NET.Sdk sets RestorePackagesWithLockFile=true, and CI restore depends on it.
+!packages.lock.json
+
+# TRIPWIRE — never create Warcry/Warcry.json.
+# DalamudPackager resolves the manifest json -> yaml -> csproj and FIRST HIT WINS,
+# with no merge and no warning. A Warcry.json here silently kills every
+# <Author>/<Name>/<Punchline>/<Description>/<RepoUrl>/<Tags> property in the csproj.
+# This project is csproj-only. See docs/PLAN.md 3.6.
+Warcry/Warcry.json
+Warcry/Warcry.yaml

@@ -1,0 +1,26 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+indent_style = space
+trim_trailing_whitespace = true
+
+[*.{cs,csproj,props,targets,slnx}]
+indent_size = 4
+
+[*.{json,jsonc,yml,yaml,md}]
+indent_size = 2
+
+[*.cs]
+# Dalamud plugins run inside the game process. These are correctness rules, not style.
+dotnet_diagnostic.CS8600.severity = error   # null literal to non-nullable
+dotnet_diagnostic.CS8602.severity = error   # dereference of possibly-null
+dotnet_diagnostic.CS8618.severity = warning # non-nullable field uninitialised
+
+csharp_new_line_before_open_brace = all
+csharp_prefer_braces = true:warning
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_using_directive_placement = outside_namespace:warning
+dotnet_sort_system_directives_first = true
