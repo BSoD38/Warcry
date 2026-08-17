@@ -444,6 +444,8 @@ public sealed class MainWindow : Window, IDisposable
             "Plays the synthesised tone when an action has no clip. Audible proof the action\n" +
             "was detected while you are setting mappings up, and noise once you are done.");
 
+        this.DrawNativeSinkSetting(cfg, ref dirty);
+
         cfg.PlayTestToneOnActions = Toggle("Play clips on my actions", cfg.PlayTestToneOnActions, ref dirty,
             "Off keeps detection and the Events tab running but plays nothing — which is what\n" +
             "you want while diagnosing, since it removes the plugin as a source of sound\n" +
@@ -629,6 +631,56 @@ public sealed class MainWindow : Window, IDisposable
         }
     }
 
+    /// <summary>
+    /// The native-engine toggle, with the honest caveats attached to it rather than buried
+    /// in a document.
+    /// </summary>
+    private void DrawNativeSinkSetting(Configuration cfg, ref bool dirty)
+    {
+        var penumbra = this.plugin.Penumbra.PenumbraAvailable;
+
+        if (!penumbra)
+        {
+            ImGui.BeginDisabled();
+        }
+
+        var native = cfg.PreferNativeSink;
+        if (ImGui.Checkbox("Play through the game's sound engine", ref native))
+        {
+            cfg.PreferNativeSink = native;
+            dirty = true;
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(
+                "Encodes each clip into the game's own .scd format and lets the engine play it,\n" +
+                "instead of mixing it ourselves with NAudio.\n\n" +
+                "What that buys: the game does the mixing and positioning, on its own bus and\n" +
+                "its own output device, by the same code that plays every other sound.\n\n" +
+                "What it costs: a hard dependency on Penumbra, and the first play of each clip\n" +
+                "is spent loading it — that one line comes out of the managed sink instead.\n\n" +
+                "Not yet measured: behaviour against the Master and Voice sliders, positional\n" +
+                "falloff, and sustained load. It is proven to play; it is not proven to behave.\n" +
+                "Anything it cannot serve falls back per line, so this cannot make you silent.");
+        }
+
+        if (!penumbra)
+        {
+            ImGui.EndDisabled();
+            ImGui.TextDisabled("  Requires Penumbra, which is not loaded.");
+            return;
+        }
+
+        var composite = this.plugin.Composite;
+        if (cfg.PreferNativeSink)
+        {
+            ImGui.TextDisabled($"  {composite.NativePlays} line(s) via the engine, " +
+                               $"{composite.ManagedPlays} via NAudio, " +
+                               $"{this.plugin.Forge.Count} clip(s) encoded.");
+        }
+    }
+
     // ---------------------------------------------------------------- Status
 
     private void DrawStatus()
@@ -671,9 +723,22 @@ public sealed class MainWindow : Window, IDisposable
         var sched = this.plugin.Scheduler;
         var vol = this.plugin.Volume;
 
+        var composite = this.plugin.Composite;
+        var forge = this.plugin.Forge;
+
         ImGui.TextUnformatted("Audio");
         ImGui.TextUnformatted($"  Sink          {sink.Status}");
         ImGui.TextUnformatted($"  Voices        {sink.ActiveVoices} / {this.plugin.Config.MaxConcurrent}");
+        ImGui.TextUnformatted($"  Routed        {composite.NativePlays} engine / {composite.ManagedPlays} NAudio");
+
+        if (this.plugin.Config.PreferNativeSink)
+        {
+            ImGui.TextUnformatted($"  Forge         {forge.Status}");
+            if (forge.TemplatePath.Length > 0)
+            {
+                ImGui.TextDisabled($"                container cloned from {forge.TemplatePath}");
+            }
+        }
         ImGui.TextUnformatted($"  Scheduler     {sched.PendingCount} pending, {sched.Dispatched} dispatched, {sched.Cancelled} cancelled");
 
         // The whole point of reading the game's config: this number should track your

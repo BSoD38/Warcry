@@ -58,6 +58,12 @@ public sealed class Plugin : IDalamudPlugin
 
     public IVoiceSink Sink { get; }
 
+    /// <summary>The sink actually installed, typed so the UI can report native-vs-managed.</summary>
+    public CompositeVoiceSink Composite { get; }
+
+    /// <summary>Encodes clips into game-loadable <c>.scd</c> and owns their redirects.</summary>
+    public ScdForge Forge { get; }
+
     public PlaybackScheduler Scheduler { get; }
 
     /// <summary>Native-audio spike, day 1. Read-only observer, disabled by default.</summary>
@@ -141,7 +147,14 @@ public sealed class Plugin : IDalamudPlugin
             this.ObservedActions.Add(id);
         }
 
-        this.Sink = new ManagedVoiceSink(Log, this.Volume, this.Config);
+        this.Forge = new ScdForge(Data, Log, this.Penumbra, PluginInterface.GetPluginConfigDirectory());
+        this.Composite = new CompositeVoiceSink(
+            Log,
+            this.Config,
+            new NativeVoiceSink(Log, this.Config, this.Forge),
+            new ManagedVoiceSink(Log, this.Volume, this.Config));
+
+        this.Sink = this.Composite;
         this.Scheduler = new PlaybackScheduler(this.Sink);
 
         // Installs the hook. Failure is logged and left inert — never thrown.
@@ -230,18 +243,25 @@ public sealed class Plugin : IDalamudPlugin
         // Which clip, for this caster, for this action.
         var resolved = this.Resolver.Resolve(in ev.Caster, in actionKey);
 
-        NAudio.Wave.ISampleProvider source;
+        Func<NAudio.Wave.ISampleProvider> createSource;
+        string variantKey;
         var gain = 1f;
 
         if (resolved is { } r && this.Clips.TryGet(r.Clip.Hash, out var cached))
         {
-            source = cached.CreateProvider(r.Rate, r.Rule.PitchMode, r.Rule.PitchFftSize);
+            var rate = r.Rate;
+            var mode = r.Rule.PitchMode;
+            var fft = r.Rule.PitchFftSize;
+
+            createSource = () => cached.CreateProvider(rate, mode, fft);
+            variantKey = VariantKey(r.Clip.Hash, rate, mode, fft);
             gain = r.CombinedGain;
         }
         else if (this.Config.FallBackToTestTone)
         {
             // Nothing mapped for this action. Audible feedback while setting mappings up.
-            source = new TestTone();
+            createSource = () => new TestTone();
+            variantKey = TestToneKey;
         }
         else
         {
@@ -250,7 +270,8 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var request = new VoiceRequest(
-            source: source,
+            createSource: createSource,
+            variantKey: variantKey,
             position: ev.Position,
             soundCategory: ev.SoundCategory,
             gain: gain,
@@ -364,12 +385,28 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    /// <summary>The synthesised tone is deterministic, so it caches like any other clip.</summary>
+    private const string TestToneKey = "warcry:testtone:v1";
+
+    /// <summary>
+    /// Identity of one exact rendering of a clip.
+    /// </summary>
+    /// <remarks>
+    /// Every parameter that changes a sample has to be in here. The native sink
+    /// content-addresses encoded files by this key and will serve a later request the
+    /// earlier one's bytes, so a missing parameter means the wrong audio plays — quietly,
+    /// and only for mappings that differ solely by the parameter that was left out.
+    /// </remarks>
+    private static string VariantKey(string hash, float rate, PitchMode mode, int fftSize)
+        => $"{hash}:{rate:0.0000}:{(byte)mode}:{fftSize}";
+
     /// <summary>Fires a tone at your own position, through the full gain chain.</summary>
     public void PlayTestTone()
     {
         var lp = Objects.LocalPlayer;
         var request = new VoiceRequest(
-            source: new TestTone(),
+            createSource: () => new TestTone(),
+            variantKey: TestToneKey,
             position: lp?.Position ?? System.Numerics.Vector3.Zero,
             soundCategory: 0, // Player
             gain: 1f,
@@ -436,7 +473,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         var lp = Objects.LocalPlayer;
         var request = new VoiceRequest(
-            source: clip.CreateProvider(rate, mode, fftSize),
+            createSource: () => clip.CreateProvider(rate, mode, fftSize),
+            variantKey: VariantKey(clip.Info.Hash, rate, mode, fftSize),
             position: lp?.Position ?? System.Numerics.Vector3.Zero,
             soundCategory: 0,
             gain: 1f,

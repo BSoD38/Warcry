@@ -7,8 +7,29 @@ namespace Warcry.Audio;
 /// <summary>One thing to play, at a place, on a channel.</summary>
 public readonly struct VoiceRequest
 {
-    /// <summary>Mono, 44100 Hz. Freshly constructed per play — never shared between plays.</summary>
-    public readonly ISampleProvider Source;
+    /// <summary>
+    /// Builds a fresh mono 44100 Hz reader. Called at most once per sink that actually
+    /// plays the request, and not at all when a sink can serve it from cache.
+    /// </summary>
+    /// <remarks>
+    /// A factory rather than an instance, for two reasons. The native sink has to
+    /// <em>drain</em> a provider to encode it, so handing the same instance to a fallback
+    /// would give it an exhausted reader and silence. And a request held back for a cast
+    /// bar no longer builds a provider it might never use.
+    /// </remarks>
+    public readonly Func<ISampleProvider> CreateSource;
+
+    /// <summary>
+    /// Stable identity of the exact audio <see cref="CreateSource"/> will produce, or empty
+    /// when there is none.
+    /// </summary>
+    /// <remarks>
+    /// Must cover every input that changes a sample — clip, rate, pitch mode, FFT size —
+    /// because the native sink content-addresses its encoded files by this key and will
+    /// serve a second request the first one's bytes. An empty key is honest: it means
+    /// "uncacheable", and the native sink declines rather than guessing.
+    /// </remarks>
+    public readonly string VariantKey;
 
     public readonly Vector3 Position;
 
@@ -20,9 +41,16 @@ public readonly struct VoiceRequest
 
     public readonly uint CasterEntityId;
 
-    public VoiceRequest(ISampleProvider source, Vector3 position, byte soundCategory, float gain, uint casterEntityId)
+    public VoiceRequest(
+        Func<ISampleProvider> createSource,
+        string variantKey,
+        Vector3 position,
+        byte soundCategory,
+        float gain,
+        uint casterEntityId)
     {
-        this.Source = source;
+        this.CreateSource = createSource;
+        this.VariantKey = variantKey;
         this.Position = position;
         this.SoundCategory = soundCategory;
         this.Gain = gain;

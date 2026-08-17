@@ -97,7 +97,11 @@ public sealed class ManagedVoiceSink : IVoiceSink
         try
         {
             // mono -> gain -> pan -> stereo, matching the mixer's format.
-            var volumeStage = new VolumeSampleProvider(request.Source) { Volume = Math.Clamp(gain, 0f, 2f) };
+            var volumeStage = new VolumeSampleProvider(request.CreateSource())
+            {
+                Volume = Math.Clamp(gain, 0f, 2f),
+            };
+
             var panStage = new PanningSampleProvider(volumeStage)
             {
                 PanStrategy = new SinPanStrategy(),

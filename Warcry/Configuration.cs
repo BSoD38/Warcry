@@ -50,6 +50,19 @@ public sealed class Configuration : IPluginConfiguration
     public bool PlayTestToneOnActions { get; set; } = true;
 
     /// <summary>
+    /// Route audio through the game's own sound engine instead of NAudio.
+    /// </summary>
+    /// <remarks>
+    /// <para>Off by default, and it should stay off until PLAN.md §6 (b)–(e) have been
+    /// checked in game: the native path is proven to <em>play</em>, but its behaviour
+    /// against the Master and Voice sliders, its positional attenuation, and its behaviour
+    /// under sustained load have never been measured.</para>
+    /// <para>Requires Penumbra. Falls back to the managed sink per line whenever the native
+    /// one cannot serve a request, so turning it on cannot make the plugin silent.</para>
+    /// </remarks>
+    public bool PreferNativeSink { get; set; }
+
+    /// <summary>
     /// Play the synthesised tone when an action has no clip mapped. Useful while setting
     /// mappings up — audible proof the action was detected — and noise once you are done.
     /// </summary>
