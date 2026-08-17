@@ -35,6 +35,12 @@ public sealed class MainWindow : Window, IDisposable
     private bool hideDropped = true;
     private bool onlyMismatch;
     private string soundFilter = "vo_";
+
+    /// <summary>Path substituted into a replayed capture; blank replays it verbatim.</summary>
+    private string soundReplayPath = string.Empty;
+
+    private bool soundReplayOverrideNumber;
+    private int soundReplayNumber;
     private readonly FileDialogManager fileDialog = new();
 
     private string actionSearch = string.Empty;
@@ -1558,24 +1564,74 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         ImGui.TextDisabled("'ms after cast' on a vo_battle line is the ground-truth grunt offset the native route must match.");
+
+        // ---- replay: the game as its own oracle ----
+        ImGui.Separator();
+        ImGui.TextWrapped(
+            "Every row is a complete, replayable PlaySound call — all eighteen arguments as the " +
+            "game passed them. Replaying one that demonstrably produced audio proves the call " +
+            "mechanism works; substituting only the path then tests exactly one thing.");
+
+        var substitute = this.soundReplayPath;
+        ImGui.SetNextItemWidth(360);
+        if (ImGui.InputTextWithHint(
+                "Substitute path", "blank = replay exactly as captured", ref substitute, 260))
+        {
+            this.soundReplayPath = substitute;
+        }
+
+        var overrideSound = this.soundReplayOverrideNumber;
+        if (ImGui.Checkbox("Override soundNumber", ref overrideSound))
+        {
+            this.soundReplayOverrideNumber = overrideSound;
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(
+                "soundNumber selects a sound GROUP, not a waveform. The Hrothgar file has five\n" +
+                "groups; group 3 holds eight weighted choices, which is why one soundNumber\n" +
+                "still gives you eight different grunts, and group 4 is empty, which means\n" +
+                "selecting it plays nothing at all.\n\n" +
+                "Sweep this 0-4 to hear each group. 'Inspect container' on the spike tab prints\n" +
+                "the whole table.");
+        }
+
+        if (this.soundReplayOverrideNumber)
+        {
+            ImGui.SameLine();
+            var n = this.soundReplayNumber;
+            ImGui.SetNextItemWidth(160);
+            if (ImGui.SliderInt("##replaysnd", ref n, 0, 7))
+            {
+                this.soundReplayNumber = n;
+            }
+        }
+
+        ImGui.TextDisabled(
+            "'dist' is how far the emitter was placed from you. Near zero means the engine wants\n" +
+            "listener-relative coordinates — in which case the spike's world coordinates put every\n" +
+            "test out of earshot, which would explain the original silence on its own.");
         ImGui.Separator();
 
         const ImGuiTableFlags flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders
                                     | ImGuiTableFlags.ScrollY | ImGuiTableFlags.Resizable
                                     | ImGuiTableFlags.SizingStretchProp;
 
-        if (!ImGui.BeginTable("##gamesounds", 7, flags, ImGui.GetContentRegionAvail()))
+        if (!ImGui.BeginTable("##gamesounds", 9, flags, ImGui.GetContentRegionAvail()))
         {
             return;
         }
 
         ImGui.TableSetupColumn("Time", ImGuiTableColumnFlags.WidthFixed, 62);
         ImGui.TableSetupColumn("Path");
-        ImGui.TableSetupColumn("Vol", ImGuiTableColumnFlags.WidthFixed, 46);
         ImGui.TableSetupColumn("Category", ImGuiTableColumnFlags.WidthFixed, 78);
         ImGui.TableSetupColumn("3D", ImGuiTableColumnFlags.WidthFixed, 34);
+        ImGui.TableSetupColumn("dist", ImGuiTableColumnFlags.WidthFixed, 54);
+        ImGui.TableSetupColumn("snd#", ImGuiTableColumnFlags.WidthFixed, 42);
         ImGui.TableSetupColumn("ms after cast", ImGuiTableColumnFlags.WidthFixed, 96);
         ImGui.TableSetupColumn("after action", ImGuiTableColumnFlags.WidthFixed, 150);
+        ImGui.TableSetupColumn(string.Empty, ImGuiTableColumnFlags.WidthFixed, 54);
         ImGui.TableSetupScrollFreeze(0, 1);
         ImGui.TableHeadersRow();
 
@@ -1593,24 +1649,35 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextUnformatted(row.When.ToString("HH:mm:ss"));
 
             ImGui.TableNextColumn();
-            if (ImGui.Selectable(row.Path))
+            if (ImGui.Selectable($"{row.Path}##path{i}"))
             {
-                ImGui.SetClipboardText(row.Path);
+                ImGui.SetClipboardText(row.Describe());
             }
 
             if (ImGui.IsItemHovered())
             {
-                ImGui.SetTooltip($"Click to copy.\nThen: /warcry dumpscd {row.Path}");
+                // The whole tuple, so the values the spike used to guess at are visible.
+                ImGui.SetTooltip($"{row.Describe()}\n\nClick to copy.\nThen: /warcry dumpscd {row.Path}");
             }
-
-            ImGui.TableNextColumn();
-            ImGui.TextUnformatted($"{row.Volume:0.00}");
 
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(row.Category.ToString());
 
             ImGui.TableNextColumn();
             ImGui.TextUnformatted(row.IsPositional ? "yes" : "-");
+
+            ImGui.TableNextColumn();
+            if (row.IsPositional)
+            {
+                ImGui.TextUnformatted($"{row.EmitterDistanceFromPlayer:0.0}");
+            }
+            else
+            {
+                ImGui.TextDisabled("-");
+            }
+
+            ImGui.TableNextColumn();
+            ImGui.TextUnformatted(row.SoundNumber.ToString());
 
             ImGui.TableNextColumn();
             if (row.MsSinceLocalCast >= 0 && row.MsSinceLocalCast < 5000)
@@ -1631,6 +1698,25 @@ public sealed class MainWindow : Window, IDisposable
             {
                 ImGui.TextDisabled("-");
             }
+
+            ImGui.TableNextColumn();
+            if (ImGui.SmallButton($"replay##{i}"))
+            {
+                this.plugin.Spike.ReplayCapture(
+                    row,
+                    string.IsNullOrWhiteSpace(this.soundReplayPath) ? null : this.soundReplayPath.Trim(),
+                    this.soundReplayOverrideNumber ? (uint)this.soundReplayNumber : null);
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip(
+                    "Calls PlaySound with this row's arguments, byte for byte.\n\n" +
+                    "Verbatim: proves the call mechanism works — a control the original spike\n" +
+                    "never had. With a substitute path: proves whether a redirected path can be\n" +
+                    "served, with every other argument known-good.\n\n" +
+                    "The result lands in the Native spike tab.");
+            }
         }
 
         ImGui.EndTable();
@@ -1638,25 +1724,135 @@ public sealed class MainWindow : Window, IDisposable
 
     // ---------------------------------------------------------- Native spike
 
+    private SpikeMode spikeMode = SpikeMode.StockGamePath;
+    private readonly List<string> spikeEngineState = [];
+
+    /// <summary>
+    /// Modes in the order they are worth running, each with the reason it exists.
+    /// </summary>
+    /// <remarks>
+    /// The old tab exposed eight modes as eight buttons with eight paragraphs of hover
+    /// text, in the order they happened to be written. One combo, ordered by diagnostic
+    /// value, says the same thing without the wall.
+    /// </remarks>
+    private static readonly (SpikeMode Mode, string Label, string Help)[] SpikeModes =
+    [
+        (SpikeMode.StockGamePath, "Stock game path  (POSITIVE CONTROL)",
+            "A real, indexed game .scd. No file written, no redirect registered.\n" +
+            "Nothing of ours is involved anywhere in this test.\n\n" +
+            "This is the test the original spike never ran, and everything else\n" +
+            "depends on it. Audible -> the call works, so any later silence is our\n" +
+            "file or our redirect. Silent -> the CALL is wrong, and neither Penumbra\n" +
+            "nor the writer was ever the problem."),
+
+        (SpikeMode.NegativeControl, "Bogus path  (negative control)",
+            "A path that does not exist, with no file and no redirect.\n" +
+            "It must be silent. Establishes what failure sounds like."),
+
+        (SpikeMode.OneClipEverywhere, "LADDER 3 - our alarm on one bank  (deterministic)",
+            "The production shape, and the one to reach for now that the container is\n" +
+            "understood.\n\n" +
+            "A battle-voice SCD picks its waveform from an explicit weighted-random\n" +
+            "table; soundNumber only chooses WHICH table. A caller can never select a\n" +
+            "specific grunt. So instead of fighting the randomisation, this rewrites\n" +
+            "the audio offset table so every index a group can roll resolves to one\n" +
+            "entry holding our clip.\n\n" +
+            "Use the Scope control below: the banks are NOT interchangeable. Group 1 is\n" +
+            "damage-taken and group 2 is death, so retargeting everything would fire the\n" +
+            "voiceline every time you got hit. Group 3 is what the game passes for an\n" +
+            "action.\n\n" +
+            "The clip is appended past the end of the file, so nothing is overwritten and\n" +
+            "the payload has no length limit."),
+
+        (SpikeMode.VerbatimTemplate, "Real SCD served from a synthetic path",
+            "A byte-for-byte copy of a real game SCD, redirected onto a path we\n" +
+            "invented. The file is definitionally valid, so silence indicts the PATH."),
+
+        (SpikeMode.ForceSingleEntry, "Our alarm, counts forced to one entry",
+            "Clones a real SCD, forces the sound/audio counts at 0x32/0x34 to 1 and\n" +
+            "gives entry 0 the freed space. Selection cannot be random, and two\n" +
+            "seconds of 440/880 Hz alarm cannot be mistaken for a voice grunt."),
+
+        (SpikeMode.RetargetToExistingBank, "LADDER 1 - retarget in place  (no audio of ours)",
+            "Three things differ between an untouched file and one carrying our clip:\n" +
+            "the offset table is rewritten, an entry is appended past the end of file,\n" +
+            "and that entry holds audio we encoded. Testing all three at once is what\n" +
+            "makes a silent result unreadable. These three payloads add ONE each.\n\n" +
+            "Rung 1: retargets the scoped group at the DEATH bank, in place. File length\n" +
+            "unchanged, and the audio is the game's own HCA.\n\n" +
+            "Death grunt -> the offset rewrite works.\n" +
+            "Normal attack grunt, or silence -> it does not, and nothing downstream\n" +
+            "matters."),
+
+        (SpikeMode.AppendExistingBank, "LADDER 2 - append the game's own audio",
+            "Rung 2: copies the DEATH bank's entry verbatim to past the end of the file\n" +
+            "and retargets at the copy. Still not one byte of our audio.\n\n" +
+            "Death grunt -> appending past EOF is fine, so only the codec is left.\n" +
+            "Silence -> the engine will not follow an offset past the original file\n" +
+            "length, and no encoder would ever have helped. Overwrite an existing slot\n" +
+            "instead of appending."),
+
+        (SpikeMode.InPlaceFillAll, "Our tone in every audio entry",
+            "Overwrites all ~22 entries with the same payload, so whichever the\n" +
+            "engine picks is ours. Sidesteps the randomisation tables entirely."),
+
+        (SpikeMode.InPlaceAudioSwap, "Our tone in audio entry 0 only",
+            "Overwrites only entry 0's header and payload. Every other byte, and\n" +
+            "the file length, are identical to a file the engine accepts."),
+
+        (SpikeMode.AuthoredPcm, "Container built from scratch (PCM)",
+            "ScdWriter.BuildPcm. Never demonstrated to play -- but never\n" +
+            "demonstrated to fail either, since nothing in the original spike ever\n" +
+            "played. Worth re-running once the positive control passes."),
+
+        (SpikeMode.AuthoredAdpcmTag, "Container from scratch, MS-ADPCM tag",
+            "As above but tagged 0x0C, to separate container rejection from codec\n" +
+            "rejection."),
+    ];
+
     private void DrawSpike()
     {
         var spike = this.plugin.Spike;
         var penumbra = this.plugin.Penumbra;
 
         ImGui.TextUnformatted("Can the game's own engine play a file we wrote?");
-        ImGui.TextDisabled("Go/no-go criteria are in docs/PLAN.md section 6.");
-        ImGui.Separator();
+        ImGui.TextDisabled(
+            "Reopened 2026-08-17. The earlier NO-GO was reached without ever establishing that\n" +
+            "PlaySound makes a noise at all. Run the positive control first — everything else\n" +
+            "is uninterpretable until it passes. Background: docs/native-spike.md.");
 
-        ImGui.TextUnformatted(penumbra.PenumbraAvailable
-            ? "  Penumbra   detected"
-            : "  Penumbra   NOT FOUND — required, PlaySound takes a game path, not a file path");
+        this.DrawSpikeInterference();
 
-        ImGui.TextUnformatted($"  Sink today  {this.plugin.Sink.Status}");
+        // These are INDEPENDENT probes, not a pipeline. Numbering them 1-2-3 read as a
+        // sequence and led to "I clicked the redirect button, then Run attempt, and heard
+        // a Midlander" — two unrelated experiments run back to back.
+        if (ImGui.CollapsingHeader("Engine state", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            this.DrawSpikeEngineState(penumbra);
+        }
 
-        // Critical control. With clips imported and action playback on, the plugin's own
-        // managed sink fires on every action — which sounds exactly like "random grunts"
-        // and has nothing to do with the spike. Any sound heard during a spike test must
-        // come from the spike.
+        if (ImGui.CollapsingHeader("Probe A — does a .scd redirect apply?", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            this.DrawSpikeRedirectCheck(spike, penumbra);
+        }
+
+        if (ImGui.CollapsingHeader("Probe B — play something", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            this.DrawSpikePlay(spike, penumbra);
+        }
+
+        if (ImGui.CollapsingHeader("Full report", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            DrawSpikeResult(spike);
+        }
+    }
+
+    /// <summary>
+    /// The plugin's own sink firing on every action sounds exactly like "random grunts" and
+    /// has nothing to do with the spike. This cost the original run several days.
+    /// </summary>
+    private void DrawSpikeInterference()
+    {
         var interfering = this.plugin.Config.Enabled
                           && this.plugin.Config.PlayTestToneOnActions
                           && this.plugin.Clips.Count > 0;
@@ -1664,7 +1860,8 @@ public sealed class MainWindow : Window, IDisposable
         if (interfering)
         {
             ImGui.Separator();
-            ImGui.TextUnformatted($"WARNING: the plugin is currently playing its own {this.plugin.Clips.Count} clips on your actions.");
+            ImGui.TextUnformatted(
+                $"WARNING: Warcry is playing its own {this.plugin.Clips.Count} clips on your actions.");
             ImGui.TextUnformatted("Anything you hear while fighting is probably that, not the spike.");
 
             if (ImGui.Button("Silence the plugin for this test"))
@@ -1675,7 +1872,7 @@ public sealed class MainWindow : Window, IDisposable
         }
         else if (this.plugin.Clips.Count > 0)
         {
-            ImGui.TextDisabled("  Plugin playback is off — any sound you hear now is the spike.");
+            ImGui.TextDisabled("Plugin playback is off — any sound you hear now is the spike.");
             ImGui.SameLine();
             if (ImGui.SmallButton("re-enable"))
             {
@@ -1684,129 +1881,280 @@ public sealed class MainWindow : Window, IDisposable
             }
         }
 
-        ImGui.Separator();
-        ImGui.TextUnformatted("Test conditions: out of combat, no target, weapon sheathed.");
-        ImGui.TextDisabled("The game plays its own battle voices when you fight, which confounds everything.");
-        ImGui.Separator();
+        ImGui.TextDisabled("Test out of combat, no target, weapon sheathed — the game's own battle voices confound everything.");
+    }
 
-        var lp = Plugin.Objects.LocalPlayer;
-        var pos = lp?.Position ?? System.Numerics.Vector3.Zero;
-        var cat = FFXIVClientStructs.FFXIV.Client.Sound.SoundVolumeCategory.Player;
+    /// <summary>
+    /// What the engine's mixer thinks, read live.
+    /// </summary>
+    /// <remarks>
+    /// If <c>disabled</c> is set, or the bus is muted, or the window is inactive with
+    /// playWhenInactive off, then nothing below the mixer can be heard and every other test
+    /// on this tab is meaningless. That was never checked once in five days.
+    /// </remarks>
+    private void DrawSpikeEngineState(PenumbraBridge penumbra)
+    {
+        this.spikeEngineState.Clear();
+        SoundDiagnostics.DescribeManager(this.spikeEngineState);
 
-        // E (absolute filesystem path, no Penumbra) is REMOVED — it hard-crashes the
-        // client. See docs/native-spike.md: the resource category is parsed from the
-        // leading path segment, so "C:\..." indexes ResourceGraph out of bounds inside
-        // FindResourceHandle. A path-redirect mechanism is genuinely required.
-        ImGui.TextDisabled("A game-relative path is mandatory — an absolute one crashes the client (see native-spike.md).");
-        ImGui.Separator();
+        foreach (var line in this.spikeEngineState)
+        {
+            ImGui.TextDisabled(line);
+        }
+
+        ImGui.TextDisabled(penumbra.PenumbraAvailable
+            ? "penumbra   detected"
+            : "penumbra   NOT FOUND — a game-relative path is mandatory, so redirects are unavailable");
+
+        ImGui.TextDisabled($"sink       {this.plugin.Sink.Status}");
+    }
+
+    /// <summary>
+    /// Asks Penumbra directly, with no audio involved.
+    /// </summary>
+    private void DrawSpikeRedirectCheck(NativeSpike spike, PenumbraBridge penumbra)
+    {
+        ImGui.TextDisabled("Independent of Probe B below — nothing here feeds into 'Run attempt'.");
+        ImGui.TextWrapped(
+            "Self-contained. Registers a temporary redirect for a fresh .scd path, then asks " +
+            "Penumbra's ResolveDefaultPath what the default collection resolves it to, and prints " +
+            "the answer below. Nothing is played, so there is nothing to mishear — and there is " +
+            "nothing to press afterwards. The line under the button IS the result.");
+
+        ImGui.TextDisabled(
+            "The DEFAULT collection is the one that matters: a PlaySound call carries no character\n" +
+            "context for Penumbra to resolve against.");
 
         if (!penumbra.PenumbraAvailable)
         {
             ImGui.BeginDisabled();
         }
 
-        // ---- texture probe: does our Penumbra integration do anything at all? ----
-        var probe = this.plugin.Probe;
-
-        ImGui.TextUnformatted("Does our Penumbra redirect work AT ALL? (no audio involved)");
-
-        if (ImGui.Button("T: redirect an icon to another icon's bytes"))
-        {
-            probe.Run();
-        }
-
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Points icon A's path at icon B's bytes. Both are real game files, so\n" +
-                "nothing can render corrupt.\n\n" +
-                "Same artwork below = the redirect APPLIED, so our IPC is fine and .scd is\n" +
-                "special (Penumbra treats it as a protected file type).\n\n" +
-                "Different artwork = weaker evidence: Dalamud may load textures via Lumina,\n" +
-                "bypassing the game's resource system and Penumbra with it.");
-        }
-
-        if (probe.RedirectedIcon != 0)
-        {
-            var size = new Vector2(56, 56);
-
-            var reference = Plugin.Textures
-                .GetFromGameIcon(new GameIconLookup(PenumbraProbe.ReferenceIcon)).GetWrapOrEmpty();
-            var redirected = Plugin.Textures
-                .GetFromGameIcon(new GameIconLookup(probe.RedirectedIcon)).GetWrapOrEmpty();
-
-            ImGui.TextUnformatted($"reference {PenumbraProbe.ReferenceIcon}");
-            ImGui.SameLine(180);
-            ImGui.TextUnformatted($"redirected {probe.RedirectedIcon}");
-
-            ImGui.Image(reference.Handle, size);
-            ImGui.SameLine(180);
-            ImGui.Image(redirected.Handle, size);
-
-            ImGui.TextUnformatted("Identical artwork means the redirect applied.");
-        }
-
-        foreach (var line in probe.Report)
-        {
-            ImGui.TextDisabled($"  {line}");
-        }
-
-        ImGui.Separator();
-        ImGui.TextUnformatted("Are the grunts even ours? Run these two before anything else.");
-
-        if (ImGui.Button("R: REDIRECT ONLY — register a mod, never call PlaySound"))
+        if (ImGui.Button("Register a redirect and verify it"))
         {
             spike.RedirectOnly();
         }
 
+        ImGui.SameLine();
+        if (ImGui.Button("Texture control"))
+        {
+            this.plugin.Probe.Run();
+        }
+
         if (ImGui.IsItemHovered())
         {
             ImGui.SetTooltip(
-                "Writes the file and registers the Penumbra redirect, then stops.\n" +
-                "PlaySound is NOT called.\n\n" +
-                "A grunt here means Penumbra is redrawing your character and reloading its\n" +
-                "voice — and every 'it played' result so far, mode A included, was that.\n" +
-                "Press it several times.");
+                "Points icon A's path at icon B's bytes — a redirect with no audio anywhere.\n" +
+                "Already known to work, so this is a regression check on the IPC itself:\n" +
+                "if the icons stop matching, the problem is our Penumbra plumbing, not .scd.");
+        }
+
+        if (!penumbra.PenumbraAvailable)
+        {
+            ImGui.EndDisabled();
+        }
+
+        // Inline, next to the button that produced it. It used to appear only in the report
+        // section further down, which is how a one-click answer got missed.
+        if (spike.LastRedirectCheck.Length > 0)
+        {
+            ImGui.TextWrapped($"-> {spike.LastRedirectCheck}");
+        }
+
+        this.DrawTextureProbeResult();
+    }
+
+    private void DrawTextureProbeResult()
+    {
+        var probe = this.plugin.Probe;
+        if (probe.RedirectedIcon == 0)
+        {
+            return;
+        }
+
+        var size = new Vector2(40, 40);
+        var reference = Plugin.Textures
+            .GetFromGameIcon(new GameIconLookup(PenumbraProbe.ReferenceIcon)).GetWrapOrEmpty();
+        var redirected = Plugin.Textures
+            .GetFromGameIcon(new GameIconLookup(probe.RedirectedIcon)).GetWrapOrEmpty();
+
+        ImGui.Image(reference.Handle, size);
+        ImGui.SameLine();
+        ImGui.Image(redirected.Handle, size);
+        ImGui.SameLine();
+        ImGui.TextDisabled("identical artwork = the redirect applied");
+    }
+
+    /// <summary>The attempt itself: which entry point, which payload, which arguments.</summary>
+    private void DrawSpikePlay(NativeSpike spike, PenumbraBridge penumbra)
+    {
+        // ---- entry point ----
+        var entry = (int)spike.Entry;
+        ImGui.SetNextItemWidth(220);
+        if (ImGui.Combo("Entry point", ref entry, "PlaySound (18 args)\0PlaySystemSound (6 args)\0PlayCutsceneVoSound (1 arg)\0"))
+        {
+            spike.Entry = (PlayEntry)entry;
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(
+                "PlaySound takes eighteen arguments, four of them booleans nobody has named,\n" +
+                "and the original spike guessed at all of them.\n\n" +
+                "PlaySystemSound takes six and is non-positional. PlayCutsceneVoSound takes\n" +
+                "one. There is correspondingly less to get wrong, which makes them much\n" +
+                "better first tests.");
+        }
+
+        // ---- mode ----
+        var current = Array.FindIndex(SpikeModes, m => m.Mode == this.spikeMode);
+        if (current < 0)
+        {
+            current = 0;
+        }
+
+        ImGui.SetNextItemWidth(340);
+        if (ImGui.BeginCombo("Payload", SpikeModes[current].Label))
+        {
+            for (var i = 0; i < SpikeModes.Length; i++)
+            {
+                if (ImGui.Selectable(SpikeModes[i].Label, i == current))
+                {
+                    this.spikeMode = SpikeModes[i].Mode;
+                }
+
+                if (ImGui.IsItemHovered())
+                {
+                    ImGui.SetTooltip(SpikeModes[i].Help);
+                }
+            }
+
+            ImGui.EndCombo();
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(SpikeModes[current].Help);
+        }
+
+        // Path source is orthogonal to the payload: a synthetic path has no sqpack index
+        // entry, a real one does. When a redirect verifies as applied and the engine still
+        // will not play it, that difference is the next thing to rule out.
+        if (this.spikeMode is not (SpikeMode.StockGamePath or SpikeMode.NegativeControl))
+        {
+            var source = (int)spike.PathSource;
+            ImGui.SetNextItemWidth(340);
+            if (ImGui.Combo(
+                    "Served from",
+                    ref source,
+                    "Synthetic path (fresh each attempt)\0Real indexed Vo_Battle path\0"))
+            {
+                spike.PathSource = (PathSource)source;
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip(
+                    "A synthetic path exists nowhere in the game's index; a real one does.\n" +
+                    "Penumbra can report a redirect as applied for either, but the engine's\n" +
+                    "resource system may only accept the second.\n\n" +
+                    "Real paths redirect ONCE per session — the handle is cached after the\n" +
+                    "first load, so a second attempt on the same path proves nothing. Reload\n" +
+                    "the plugin between real-path attempts.");
+            }
+        }
+
+        // Say up front what the control is going to do. Hearing a voice that is obviously
+        // not your character is the POINT, and reads as a bug if nobody says so first.
+        if (this.spikeMode == SpikeMode.StockGamePath)
+        {
+            var stock = spike.StockPath;
+            ImGui.TextWrapped(stock.Length > 0
+                ? $"Will play stock game data: {stock}"
+                : "No stock Vo_Battle path resolved — press 'Probe real paths' below.");
+            ImGui.TextDisabled(
+                "Deliberately a race, gender and language you are NOT. Hearing the wrong voice is\n" +
+                "success: it cannot be your own character and it cannot be ambient. That is the\n" +
+                "control the original spike never had.");
+        }
+
+        if (this.spikeMode == SpikeMode.OneClipEverywhere)
+        {
+            var scope = spike.TargetGroup + 1; // -1 (all) sits at index 0
+            ImGui.SetNextItemWidth(340);
+            if (ImGui.Combo(
+                    "Scope",
+                    ref scope,
+                    "ALL indices (also replaces damage + death)\0" +
+                    "group 0 — attack (light)\0" +
+                    "group 1 — damage taken\0" +
+                    "group 2 — death\0" +
+                    "group 3 — attack, what the game uses for actions\0" +
+                    "group 4 — unused\0"))
+            {
+                spike.TargetGroup = scope - 1;
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip(
+                    "Which bank to overwrite. Verified in game 2026-08-17 and corroborated by\n" +
+                    "the parsed weight table and the audio lengths — damage grunts are the\n" +
+                    "shortest bank, death the longest.\n\n" +
+                    "Group 3 is the one to use: it is what the game passes for an action, so\n" +
+                    "the character keeps grunting normally when hurt or killed.\n\n" +
+                    "Set soundNumber below to match the scope, or the roll lands in a bank you\n" +
+                    "did not touch.");
+            }
+
+            var codec = spike.Codec == ScdWriter.FormatMsAdPcm ? 0 : 1;
+            ImGui.SetNextItemWidth(340);
+            if (ImGui.Combo("Codec", ref codec, "MS-ADPCM (what the game uses)\0PCM (known rejected)\0"))
+            {
+                spike.Codec = codec == 0 ? ScdWriter.FormatMsAdPcm : ScdWriter.FormatPcm;
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip(
+                    "A survey of the game's own SCDs found 267 MS-ADPCM entries, 92 HCA, and\n" +
+                    "not one PCM entry. The engine loaded a PCM entry of ours and refused to\n" +
+                    "decode it, which fits Format 0x01 being dead code.\n\n" +
+                    "PCM is kept only so that negative result stays reproducible.");
+            }
+
+            if (spike.TargetGroup >= 0 && spike.SoundNumber != (uint)spike.TargetGroup)
+            {
+                ImGui.TextDisabled($"  soundNumber is {spike.SoundNumber}, scope is group {spike.TargetGroup}.");
+                ImGui.SameLine();
+                if (ImGui.SmallButton($"set soundNumber to {spike.TargetGroup}"))
+                {
+                    spike.SoundNumber = (uint)spike.TargetGroup;
+                }
+            }
+        }
+
+        // ---- arguments ----
+        var positional = spike.IsPositional;
+        if (ImGui.Checkbox("isPositional", ref positional))
+        {
+            spike.IsPositional = positional;
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(
+                "OFF by default, deliberately.\n\n" +
+                "The original spike always passed true together with the player's WORLD\n" +
+                "coordinates. If the engine wants listener-relative coordinates, every test\n" +
+                "was emitted hundreds of units away and attenuated to nothing — which alone\n" +
+                "explains the whole NO-GO. Off removes the variable.\n\n" +
+                "The Game sounds tab now shows what the game itself passes, which settles it.");
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("P: probe real paths"))
-        {
-            spike.ProbeRealPaths();
-        }
-
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Lists which real Vo_Battle paths your install actually contains.\n" +
-                "Mode B needs one; my earlier guesses did not resolve, which is why B\n" +
-                "never produced a result.");
-        }
-
-        ImGui.Separator();
-        ImGui.TextUnformatted("N should be completely silent (it was, 40/40):");
-
-        if (ImGui.Button("N: NEGATIVE CONTROL — bogus path, no file, no redirect"))
-        {
-            spike.Run(SpikeMode.NegativeControl, pos, cat);
-        }
-
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Plays a path that does not exist, with nothing written and nothing\n" +
-                "redirected. It MUST be silent.\n\n" +
-                "If it produces grunts, then PlaySound is replaying whatever was left in\n" +
-                "the recycled SoundData pool slot — and every 'it played' result so far,\n" +
-                "mode A included, is void.\n\n" +
-                "This should have been the first test in the spike, not the last.");
-        }
-
-        ImGui.Separator();
-        ImGui.TextUnformatted("Our file is verified byte-correct, so these test selection, not the writer:");
-
         var auto = spike.AutoRelease;
-        if (ImGui.Checkbox("autoRelease (production behaviour, disables polling)", ref auto))
+        if (ImGui.Checkbox("autoRelease", ref auto))
         {
             spike.AutoRelease = auto;
         }
@@ -1814,15 +2162,35 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.IsItemHovered())
         {
             ImGui.SetTooltip(
-                "OFF: we retain the SoundData to poll it, then force-release it on the next\n" +
-                "press. That churns a 256-slot pool shared with the whole game and is the\n" +
-                "prime suspect for the intermittent silence.\n\n" +
-                "ON: the engine owns and reclaims the slot, exactly as production will.\n" +
-                "No measurement possible — judge by ear. Try repeated presses both ways.");
+                "OFF: we retain the SoundData so its resource handle can be inspected — the\n" +
+                "readout that says whether our file reached the engine.\n\n" +
+                "ON: the engine owns and reclaims the slot, exactly as production will.");
+        }
+
+        var category = (int)spike.Category;
+        ImGui.SetNextItemWidth(220);
+        if (ImGui.Combo("Category", ref category, "Player\0Party\0Other\0Unk3\0Unk4\0NoPlay\0BypassVolumeRules\0"))
+        {
+            spike.Category = (FFXIVClientStructs.FFXIV.Client.Sound.SoundVolumeCategory)category;
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(
+                "Player is what the game uses for your own character.\n" +
+                "NoPlay (5) is presumably silent by design — useful as another negative control.\n" +
+                "BypassVolumeRules (6) is the one to try if everything else is inaudible.");
+        }
+
+        var volume = spike.Volume;
+        ImGui.SetNextItemWidth(220);
+        if (ImGui.SliderFloat("volume", ref volume, 0f, 1f))
+        {
+            spike.Volume = volume;
         }
 
         var sn = (int)spike.SoundNumber;
-        ImGui.SetNextItemWidth(200);
+        ImGui.SetNextItemWidth(220);
         if (ImGui.SliderInt("soundNumber", ref sn, 0, 24))
         {
             spike.SoundNumber = (uint)Math.Max(0, sn);
@@ -1831,128 +2199,96 @@ public sealed class MainWindow : Window, IDisposable
         if (ImGui.IsItemHovered())
         {
             ImGui.SetTooltip(
-                "We have only ever passed 0. If this selects a specific entry rather than\n" +
-                "meaning 'any', it is the answer to the randomisation.\n\n" +
-                "Sweep it with F: if a particular value always plays our tone, selection\n" +
-                "is deterministic and no container rebuild is needed at all.");
-        }
-
-        if (ImGui.Button("H: force ONE entry, 1 second long"))
-        {
-            spike.Run(SpikeMode.ForceSingleEntry, pos, cat);
-        }
-
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Sets the template's sound and audio counts to 1, so there is exactly one\n" +
-                "candidate and selection cannot be random. Entry 0 then gets all the freed\n" +
-                "space, which lifts the 60ms ceiling to over a second.\n\n" +
-                "A full second of falling tone is impossible to mistake for a voice grunt —\n" +
-                "which finally settles whether we are hearing OUR audio or the game's.");
+                "A battle-voice SCD holds ~22 entries and one file covers a whole race,\n" +
+                "gender and language — so something must select the entry, and this is the\n" +
+                "candidate. The Game sounds tab now records what the game passes.");
         }
 
         ImGui.Separator();
 
-        if (ImGui.Button("G: fill EVERY audio entry"))
+        var pos = this.plugin.CachedPlayerPosition;
+        var needsPenumbra = this.spikeMode is not (SpikeMode.StockGamePath or SpikeMode.NegativeControl);
+
+        if (needsPenumbra && !penumbra.PenumbraAvailable)
         {
-            spike.Run(SpikeMode.InPlaceFillAll, pos, cat);
+            ImGui.BeginDisabled();
         }
 
-        if (ImGui.IsItemHovered())
+        if (ImGui.Button("Run attempt"))
         {
-            ImGui.SetTooltip(
-                "Overwrites all ~22 entries with the same payload, so whichever the engine\n" +
-                "picks is ours. Sidesteps the layout tables entirely.\n\n" +
-                "If this plays reliably, we have a working native path today — no need to\n" +
-                "understand the randomisation at all.");
+            spike.Run(this.spikeMode, pos);
+        }
+
+        if (needsPenumbra && !penumbra.PenumbraAvailable)
+        {
+            ImGui.EndDisabled();
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("F: swap entry 0 only"))
+        if (ImGui.Button("Replay (warm)") && spike.LastPath.Length > 0)
         {
-            spike.Run(SpikeMode.InPlaceAudioSwap, pos, cat);
-        }
-
-        ImGui.Separator();
-        ImGui.TextUnformatted("Every attempt above uses a FRESH path, so every one is a cold async load.");
-        ImGui.TextUnformatted("Press this repeatedly instead — same path, already loaded:");
-
-        if (ImGui.Button("REPLAY the same path (warm)") && spike.LastPath.Length > 0)
-        {
-            spike.Replay(pos, cat);
+            spike.ReplayLast(pos);
         }
 
         if (ImGui.IsItemHovered())
         {
             ImGui.SetTooltip(
-                "Re-plays the previous path with no rewrite and no re-redirect.\n\n" +
-                "Reliable here means the intermittency was cold-load latency, not our file —\n" +
-                "and the production design already calls for pre-warming each clip once.\n\n" +
-                "Still intermittent here means the problem really is in the file.");
-        }
-
-        if (spike.LastPath.Length > 0)
-        {
-            ImGui.SameLine();
-            ImGui.TextDisabled(spike.LastPath);
-        }
-
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Takes a real game SCD and overwrites ONLY audio entry 0's header and\n" +
-                "payload. Every other byte, and the file length, are identical to a file\n" +
-                "the engine demonstrably accepts.\n\n" +
-                "Plays  -> our audio entry is correct; the container rebuild is the bug.\n" +
-                "Silent -> our audio entry (or PCM support itself) is the bug.\n\n" +
-                "Short by necessity: it has to fit audio entry 0's existing slot.");
-        }
-
-        ImGui.Separator();
-        ImGui.TextDisabled("Earlier controls:");
-
-        if (ImGui.Button("A: verbatim template -> synthetic path"))
-        {
-            spike.Run(SpikeMode.VerbatimTemplate, pos, cat);
-        }
-
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Serves a byte-for-byte copy of a real game SCD from a synthetic path.\n" +
-                "The file is definitionally valid.\n\n" +
-                "Silence here means Penumbra-invented paths do not work with PlaySound —\n" +
-                "our writer is not the problem.");
-        }
-
-        ImGui.TextUnformatted("B is now THE test — real indexed path, loud alarm payload:");
-
-        if (ImGui.Button("B: our alarm -> real indexed path"))
-        {
-            spike.Run(SpikeMode.AuthoredOnRealPath, pos, cat);
-        }
-
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Serves our authored file from a real vo_battle path that exists in the\n" +
-                "index but has not been loaded this session.\n\n" +
-                "The plumbing is definitionally sound, so silence here indicts the writer.");
-        }
-
-        ImGui.Separator();
-        ImGui.TextDisabled("Both unknowns at once (what we ran before):");
-
-        if (ImGui.Button("C: our PCM -> synthetic"))
-        {
-            spike.Run(SpikeMode.AuthoredPcm, pos, cat);
+                "Re-plays the previous path with no rewrite and no re-registration.\n" +
+                "Every fresh attempt is a cold asynchronous load; this one is warm.");
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("D: MS-ADPCM tag -> synthetic"))
+        if (ImGui.Button("Probe real paths"))
         {
-            spike.Run(SpikeMode.AuthoredAdpcmTag, pos, cat);
+            spike.ProbeRealPaths();
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Lists which real Vo_Battle paths this installation actually contains.");
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Inspect container"))
+        {
+            spike.Inspect();
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(
+                "Dumps the template's audio entries and its weighted-random sound groups.\n" +
+                "Also: /warcry scdinfo <game path>");
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Survey formats"))
+        {
+            // Everything the watcher has seen this session feeds the survey, so logging
+            // sounds first (with the filter cleared) makes it much more representative.
+            var observed = new List<string>();
+            var watcher = this.plugin.SoundWatcher;
+            for (var i = 0; i < watcher.Count; i++)
+            {
+                var path = watcher.At(i).Path;
+                if (!string.IsNullOrEmpty(path))
+                {
+                    observed.Add(path);
+                }
+            }
+
+            spike.SurveyFormats(observed);
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(
+                "Which audio formats the game's own .scd files actually contain.\n\n" +
+                "The ladder has narrowed the failure to 'the engine will not decode the audio\n" +
+                "entry we wrote'. Rather than guess at a codec and build an encoder on a hunch,\n" +
+                "find out what the engine demonstrably eats and copy that structure.\n\n" +
+                "Reads every .scd path logged on the Game sounds tab this session, plus a dense\n" +
+                "probe of sound/foot/dev/. Clear the filter and log for a minute first.");
         }
 
         if (spike.Tracking)
@@ -1961,24 +2297,26 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextUnformatted("watching...");
         }
 
-        if (!penumbra.PenumbraAvailable)
+        if (spike.LastPath.Length > 0)
         {
-            ImGui.EndDisabled();
+            ImGui.TextDisabled($"last path: {spike.LastPath}");
         }
 
-        ImGui.Separator();
+        ImGui.TextDisabled(
+            "To replay a call the GAME made, argument for argument, use the Game sounds tab.");
+    }
 
-        // Shown separately from the report so it survives log rotation and rapid presses.
+    private static void DrawSpikeResult(NativeSpike spike)
+    {
         if (spike.LastVerdict.Length > 0)
         {
-            ImGui.TextUnformatted($"Last verdict: {spike.LastVerdict}");
+            ImGui.TextUnformatted($"Verdict: {spike.LastVerdict}");
             ImGui.Separator();
         }
 
         if (spike.Report.Count == 0)
         {
             ImGui.TextDisabled("No attempt yet.");
-            ImGui.TextDisabled("This is the first step that can crash the client — use a striking dummy, not a duty.");
             return;
         }
 

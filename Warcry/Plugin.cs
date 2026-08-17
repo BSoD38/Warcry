@@ -80,6 +80,18 @@ public sealed class Plugin : IDalamudPlugin
     public uint LastLocalCastActionId { get; private set; }
 
     /// <summary>
+    /// The local player's world position, refreshed once per frame.
+    /// </summary>
+    /// <remarks>
+    /// <c>SoundManagerWatcher</c> needs this from inside the <c>PlaySound</c> detour, to
+    /// compare against the emitter position the game passes — the check that establishes
+    /// whether the engine wants world or listener-relative coordinates. The object table
+    /// must not be touched off the main thread, so the value is cached here instead. A torn
+    /// read is possible and harmless: this is diagnostic, not gameplay.
+    /// </remarks>
+    public System.Numerics.Vector3 CachedPlayerPosition { get; private set; }
+
+    /// <summary>
     /// Every action id seen firing from the local player. The Action sheet is full of
     /// duplicates and unused rows, so this is the only reliable answer to "which id does
     /// this button actually use".
@@ -122,7 +134,10 @@ public sealed class Plugin : IDalamudPlugin
         // Installs the hook. Failure is logged and left inert — never thrown.
         this.Watcher = new ActionWatcher(Interop, Log, this.VoiceSlots, () => PlayerState.EntityId, this.OnCast);
         this.SoundWatcher = new SoundManagerWatcher(
-            Interop, Log, () => (this.LastLocalCastTicks, this.LastLocalCastActionId));
+            Interop,
+            Log,
+            () => (this.LastLocalCastTicks, this.LastLocalCastActionId),
+            () => this.CachedPlayerPosition);
 
         this.mainWindow = new MainWindow(this);
         this.windows.AddWindow(this.mainWindow);
@@ -241,6 +256,7 @@ public sealed class Plugin : IDalamudPlugin
     private void OnFrameworkUpdate(IFramework framework)
     {
         this.elapsed += framework.UpdateDelta.TotalSeconds;
+        this.CachedPlayerPosition = Objects.LocalPlayer?.Position ?? System.Numerics.Vector3.Zero;
         this.Volume.Update(this.elapsed);
         this.Scheduler.Update();
         this.Sink.Update();
@@ -270,6 +286,14 @@ public sealed class Plugin : IDalamudPlugin
         if (trimmed.StartsWith("dumpscd ", StringComparison.OrdinalIgnoreCase))
         {
             this.DumpGameFile(trimmed[8..].Trim());
+            return;
+        }
+
+        if (trimmed.StartsWith("scdinfo", StringComparison.OrdinalIgnoreCase))
+        {
+            // Blank argument inspects the default template.
+            this.Spike.Inspect(trimmed.Length > 7 ? trimmed[7..].Trim() : null);
+            this.mainWindow.IsOpen = true;
             return;
         }
 

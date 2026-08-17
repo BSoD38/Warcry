@@ -25,12 +25,12 @@
 |---|---|---|
 | M0 | Skeleton + toolchain | ✅ done |
 | M1 | Detection + Diagnostics | ✅ done — hook live, Events/Status/Sheets tabs, voice-slot table |
-| M2 | Native spike | ⛔ **NO-GO, closed 2026-08-17.** No test ever demonstrated audio from a `PlaySound` call — the grunts heard throughout were ambient, proven by B shadowing a *Japanese Midlander* file while only the local Hrothgar voice was ever heard. A Penumbra temporary-mod redirect never takes effect for `.scd` (a protected file type with an undocumented RSF workaround). Full write-up and the substantial findings that *are* solid: `docs/native-spike.md`. |
+| M2 | Native spike | ✅ **GO, 2026-08-17.** A clip we encoded, in a container we assembled, played through the game's own engine. Route: clone a real `Vo_Battle` SCD at runtime → encode mono **MS-ADPCM** (`0x0C`, 50-byte `WAVEFORMATEX` header, confirmed against a real entry) → append past EOF and retarget **only the scoped group's** audio indices → serve from a **content-addressed** synthetic path via Penumbra → `PlaySound(soundNumber: group)`. Remaining work is engineering, not research: PLAN §6 criteria (b)–(e) have still never been reached. Full history below. |
 | M3 | Managed sink | ✅ done — and the cast offset came out **better than planned** (measured per-event, no slider) |
 | M4 | Clip library + profiles + resolution | ✅ done — content-addressed library, profiles, resolver with fallback chain, weighted variants, no-immediate-repeat |
 | M5 | In-game editor | 🟡 **partly done, and past plan scope in places** — searchable action combo, job filter, observed-action learning, drag-drop + file-dialog import, per-mapping pitch, bulk pitch apply, action-family matching. Missing: action icons, virtualised table, bulk assign by category/job, resolution-trace test panel |
 | M6 | Settings, throttle, gates | ❌ **not started — the biggest functional gap** |
-| M7 | Native sink | ⛔ **cut** — M2 came back NO-GO. The managed sink is the shipping answer, exactly as `IVoiceSink` was designed to allow. The 6 days budgeted here are freed. |
+| M7 | Native sink | 🟢 **unblocked** — M2 came back GO. `ScdForge` is now a known quantity: `ScdWriter.PointAudioAtOneEntry` + `MsAdPcm` + `PenumbraBridge`, all proven in game. Two constraints shape the design: a resource handle is cached per path for the life of the game process, so **each distinct clip needs its own content-addressed path and one pre-warm play**; and `ReleaseSoundData` does not appear to decrement `SoundResourceHandle.SoundDataRefCount`, so resource lifetime needs a real answer before shipping. Still gated on §6 (b)–(e). **The managed sink remains the default** — this is an opt-in enhancement, not a replacement. |
 | M8 | Release + repo | ❌ not started; csproj still carries `TODO-your-name` |
 | M9 | v2: other players | ❌ not started; the audience filter seam exists and only `Self` is enabled |
 

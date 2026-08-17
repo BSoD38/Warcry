@@ -9,15 +9,53 @@ using InteropGenerator.Runtime;
 
 namespace Warcry.Native;
 
-public readonly struct SoundLogRow
+/// <summary>
+/// One observed <c>SoundManager::PlaySound</c> call, captured whole.
+/// </summary>
+/// <remarks>
+/// <para><b>Every argument, not a selection.</b> The first version of this struct kept five
+/// of the eighteen parameters, which meant the spike spent days guessing at values the game
+/// was handing us on every frame — <c>a9</c>, <c>a13</c>, <c>a15</c>, <c>a18</c>,
+/// <c>midiNote</c>, <c>soundNumber</c>, <c>speed</c> and the fade flags. A captured row is
+/// now a complete, replayable call.</para>
+/// <para>Rows are snapshots: written once inside the detour and only read afterwards.</para>
+/// </remarks>
+public struct SoundLogRow
 {
-    public readonly DateTime When;
-    public readonly string Path;
-    public readonly float Volume;
-    public readonly SoundVolumeCategory Category;
-    public readonly bool IsPositional;
-    public readonly Vector3 Position;
-    public readonly bool Played;
+    public DateTime When;
+    public string Path;
+
+    // ---- the PlaySound argument tuple, verbatim ----
+    public float Volume;
+    public uint FadeInDuration;
+    public Vector3 Position;
+    public float Speed;
+    public int A9;
+    public uint SoundNumber;
+    public bool AutoRelease;
+    public SoundVolumeCategory Category;
+    public bool A13;
+    public int MidiNote;
+    public bool A15;
+    public bool DefaultFadeOut;
+    public bool IsPositional;
+    public bool A18;
+
+    /// <summary>Whether the game's own call returned a <c>SoundData*</c>.</summary>
+    public bool Played;
+
+    /// <summary>
+    /// The local player's world position at the moment of the call.
+    /// </summary>
+    /// <remarks>
+    /// The whole point of this field: the spike passed <em>world</em> coordinates to
+    /// <c>PlaySound</c> because that is what it had. If the engine actually wants
+    /// listener-relative coordinates, every spike attempt was emitted a couple of hundred
+    /// units from the listener and attenuated to nothing — which would explain total
+    /// silence in every mode without any fault in the file or the redirect. Comparing this
+    /// against <see cref="Position"/> on a real <c>vo_battle</c> line settles it.
+    /// </remarks>
+    public Vector3 PlayerPosition;
 
     /// <summary>
     /// Milliseconds since the local player's last ActionEffect, or -1 if none.
@@ -30,36 +68,42 @@ public readonly struct SoundLogRow
     /// not by the effect packet. So "match the game's grunt" means a per-action table,
     /// which the plugin can learn by watching. See docs/native-spike.md.
     /// </remarks>
-    public readonly double MsSinceLocalCast;
+    public double MsSinceLocalCast;
 
     /// <summary>The local player's last action id, so the delay above can be attributed.</summary>
-    public readonly uint AfterActionId;
+    public uint AfterActionId;
 
-    public SoundLogRow(
-        DateTime when, string path, float volume, SoundVolumeCategory category,
-        bool isPositional, Vector3 position, bool played, double msSinceLocalCast,
-        uint afterActionId)
-    {
-        this.AfterActionId = afterActionId;
-        this.When = when;
-        this.Path = path;
-        this.Volume = volume;
-        this.Category = category;
-        this.IsPositional = isPositional;
-        this.Position = position;
-        this.Played = played;
-        this.MsSinceLocalCast = msSinceLocalCast;
-    }
+    /// <summary>
+    /// How far the emitter was placed from the player. Near zero means the engine is being
+    /// handed listener-relative coordinates; roughly the player's distance from the map
+    /// origin means world coordinates.
+    /// </summary>
+    public readonly float EmitterDistanceFromPlayer => Vector3.Distance(this.Position, this.PlayerPosition);
+
+    /// <summary>The full argument tuple on one line, for the clipboard.</summary>
+    public readonly string Describe()
+        => $"{this.Path}\n" +
+           $"  volume={this.Volume:0.000} fadeIn={this.FadeInDuration} speed={this.Speed:0.000}\n" +
+           $"  pos=({this.Position.X:0.00}, {this.Position.Y:0.00}, {this.Position.Z:0.00}) " +
+           $"positional={this.IsPositional} playerPos=({this.PlayerPosition.X:0.00}, " +
+           $"{this.PlayerPosition.Y:0.00}, {this.PlayerPosition.Z:0.00}) " +
+           $"distance={this.EmitterDistanceFromPlayer:0.00}\n" +
+           $"  a9={this.A9} soundNumber={this.SoundNumber} autoRelease={this.AutoRelease} " +
+           $"category={this.Category}\n" +
+           $"  a13={this.A13} midiNote={this.MidiNote} a15={this.A15} " +
+           $"defaultFadeOut={this.DefaultFadeOut} a18={this.A18}\n" +
+           $"  -> returned {(this.Played ? "a SoundData*" : "null")}";
 }
 
 /// <summary>
-/// Read-only observer of <c>SoundManager::PlaySound</c>. Day 1 of the native-audio spike.
+/// Read-only observer of <c>SoundManager::PlaySound</c>.
 /// </summary>
 /// <remarks>
-/// <para>Answers three things at once, without writing a single byte of .scd: what real
-/// game-path .scd files look like (templates for the writer), whether the signature
-/// resolves at all, and — for <c>vo_battle</c> lines — exactly how long after snapshot
-/// the game plays its own battle grunt.</para>
+/// <para>Its original job was to find real <c>.scd</c> paths and measure the game's own
+/// grunt latency. Its more important job now is to be the <em>oracle</em>: the game calls
+/// this function successfully hundreds of times a minute, so rather than guessing at the
+/// eighteen arguments we record a call that demonstrably produced audio and replay it
+/// verbatim, changing one thing at a time.</para>
 /// <para><b>This function is extremely hot</b> — it fires for every sound in the game,
 /// including UI clicks and footsteps. The hook is therefore installed DISABLED and only
 /// enabled while the user is actively logging. When enabled, the path filter is applied
@@ -76,6 +120,7 @@ public sealed unsafe class SoundManagerWatcher : IDisposable
     private readonly Hook<SoundManager.Delegates.PlaySound>? hook;
     private readonly IPluginLog log;
     private readonly Func<(long Ticks, uint ActionId)> lastLocalCast;
+    private readonly Func<Vector3> playerPosition;
 
     private readonly SoundLogRow[] rows = new SoundLogRow[Capacity];
     private int next;
@@ -84,10 +129,15 @@ public sealed unsafe class SoundManagerWatcher : IDisposable
 
     private byte[] filterBytes = "vo_"u8.ToArray();
 
-    public SoundManagerWatcher(IGameInteropProvider interop, IPluginLog log, Func<(long, uint)> lastLocalCast)
+    public SoundManagerWatcher(
+        IGameInteropProvider interop,
+        IPluginLog log,
+        Func<(long, uint)> lastLocalCast,
+        Func<Vector3> playerPosition)
     {
         this.log = log;
         this.lastLocalCast = lastLocalCast;
+        this.playerPosition = playerPosition;
 
         try
         {
@@ -187,9 +237,29 @@ public sealed unsafe class SoundManagerWatcher : IDisposable
                 ? (Stopwatch.GetTimestamp() - lastTicks) * 1000.0 / Stopwatch.Frequency
                 : -1.0;
 
-            this.rows[this.next] = new SoundLogRow(
-                DateTime.Now, path.ToString(), volume, volumeCategory,
-                isPositional, new Vector3(posX, posY, posZ), result != null, delta, lastActionId);
+            this.rows[this.next] = new SoundLogRow
+            {
+                When = DateTime.Now,
+                Path = path.ToString(),
+                Volume = volume,
+                FadeInDuration = fadeInDuration,
+                Position = new Vector3(posX, posY, posZ),
+                Speed = speed,
+                A9 = a9,
+                SoundNumber = soundNumber,
+                AutoRelease = autoRelease,
+                Category = volumeCategory,
+                A13 = a13,
+                MidiNote = midiNote,
+                A15 = a15,
+                DefaultFadeOut = defaultFadeOut,
+                IsPositional = isPositional,
+                A18 = a18,
+                Played = result != null,
+                PlayerPosition = this.playerPosition(),
+                MsSinceLocalCast = delta,
+                AfterActionId = lastActionId,
+            };
 
             this.next = (this.next + 1) % Capacity;
             if (this.Count < Capacity)

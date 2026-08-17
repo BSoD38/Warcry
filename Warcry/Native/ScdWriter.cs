@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.IO;
 
 namespace Warcry.Native;
@@ -31,6 +32,20 @@ public static class ScdWriter
     /// <summary>SscfWaveFormat.MsAdPcm — the fallback if PCM is rejected.</summary>
     public const uint FormatMsAdPcm = 0x0C;
 
+    /// <summary>HCA. What the game's own battle voices use; we cannot encode it.</summary>
+    public const uint FormatHca = 0x1A;
+
+    /// <summary>
+    /// The "no audio here" marker. A real battle-voice file is full of these.
+    /// </summary>
+    /// <remarks>
+    /// <c>Vo_Battle_PC_ros_Ma_fr.scd</c> has 22 audio entries of which 6 — indices 6, 7, 8,
+    /// 15, 16, 17 — are 32-byte stubs with <c>dataLength = 0</c> and this format tag. They
+    /// are padding between banks and no group record references any of them, so they are
+    /// not a source of silence; they are simply gaps in the numbering.
+    /// </remarks>
+    public const uint FormatEmpty = 0xFFFFFFFF;
+
     private const int HeaderSize = 0x30;
     private const int TableBlockOffset = 0x30;
 
@@ -43,6 +58,57 @@ public static class ScdWriter
     private const int OffTable3 = 0x40;
     private const int OffTable4 = 0x48;
 
+    /// <summary>
+    /// One encoded audio entry: the eight header fields plus the codec header the format
+    /// needs.
+    /// </summary>
+    /// <remarks>
+    /// Raw PCM needs no codec header, so the writer originally hardcoded
+    /// <c>SubInfoSize = 0</c>. Every format the game actually uses does need one — the
+    /// survey found MS-ADPCM and HCA and no PCM at all — so the payload carries its own.
+    /// </remarks>
+    public readonly record struct AudioPayload(
+        uint Format,
+        uint SampleRate,
+        uint Channels,
+        byte[] SubInfo,
+        byte[] Data)
+    {
+        /// <summary>Raw 16-bit samples, no codec header.</summary>
+        /// <remarks>
+        /// Kept for the record. The engine loaded a file containing one of these and refused
+        /// to decode it, and a survey of the game's own SCDs found no PCM entry anywhere, so
+        /// <see cref="FormatPcm"/> looks like dead code in the engine.
+        /// </remarks>
+        public static AudioPayload Pcm16(ReadOnlySpan<short> pcm, uint sampleRate)
+        {
+            var data = new byte[pcm.Length * 2];
+            for (var i = 0; i < pcm.Length; i++)
+            {
+                BinaryPrimitives.WriteInt16LittleEndian(data.AsSpan(i * 2), pcm[i]);
+            }
+
+            return new AudioPayload(FormatPcm, sampleRate, 1, [], data);
+        }
+
+        /// <summary>Mono MS-ADPCM — the format the game demonstrably plays and we can write.</summary>
+        public static AudioPayload MsAdPcmMono(
+            ReadOnlySpan<short> pcm, uint sampleRate, int blockAlign = MsAdPcm.DefaultBlockAlign)
+            => new(
+                FormatMsAdPcm,
+                sampleRate,
+                1,
+                MsAdPcm.BuildCodecHeader(1, (int)sampleRate, blockAlign),
+                MsAdPcm.EncodeMono(pcm, blockAlign));
+
+        /// <summary>Total bytes this entry occupies, header included.</summary>
+        public int TotalLength => 32 + this.SubInfo.Length + this.Data.Length;
+
+        public string Describe(uint sampleRate)
+            => $"format 0x{this.Format:X2}, {this.Data.Length} bytes of audio, " +
+               $"{this.SubInfo.Length}-byte codec header (SubInfoSize 0x{this.SubInfo.Length:X})";
+    }
+
     /// <summary>Parsed shape of a game SCD, enough to lift one entry out of it.</summary>
     public sealed class Template
     {
@@ -53,6 +119,17 @@ public static class ScdWriter
         public required uint[] AudioOffsets { get; init; }
 
         public required uint[] Table3Offsets { get; init; }
+
+        /// <summary>Offset of the audio-entry offset table itself (the u32 array at 0x3C points here).</summary>
+        /// <remarks>
+        /// Needed by <see cref="PointAllAudioAtOneEntry"/>: group records reference audio by
+        /// <em>index</em>, and this table is what turns an index into a file offset. Rewrite
+        /// it and every index resolves wherever you like.
+        /// </remarks>
+        public required int AudioTableOffset { get; init; }
+
+        /// <summary>Offset of the sound-entry offset table.</summary>
+        public required int SoundTableOffset { get; init; }
 
         /// <summary>Byte range of sound entry 0, to be copied verbatim.</summary>
         public required int SoundEntry0Offset { get; init; }
@@ -134,6 +211,8 @@ public static class ScdWriter
             SoundOffsets = sounds,
             AudioOffsets = audio,
             Table3Offsets = t3,
+            AudioTableOffset = audioTable,
+            SoundTableOffset = soundTable,
             SoundEntry0Offset = (int)sounds[0],
             SoundEntry0Length = soundLen,
             Table3Entry0Offset = t3Off,
@@ -386,6 +465,234 @@ public static class ScdWriter
 
         note = $"counts forced to 1 sound / 1 audio; entry 0 now holds {samples} samples " +
                $"({samples * 1000.0 / sampleRate:0} ms) using the freed space to end of file";
+
+        return bytes;
+    }
+
+    /// <summary>
+    /// Makes playback deterministic by pointing <em>every</em> audio index at one entry,
+    /// then giving that entry the whole rest of the file.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Why this beats every other approach in here.</b> A battle-voice SCD does not
+    /// pick a waveform at random by accident — it contains an explicit weighted-random table.
+    /// Five group blocks each hold a list of 8-byte records
+    /// <c>(cueIndex, audioIndex, cumulativeWeight, localIndex)</c>, and <c>PlaySound</c>'s
+    /// <c>soundNumber</c> selects the <em>group</em>. Group 3 of the Hrothgar file holds eight
+    /// records, which is why a single <c>soundNumber</c> still produces eight different
+    /// grunts.</para>
+    /// <para>You could rewrite those records. You do not need to: they reference audio by
+    /// index, and the table this method rewrites is what resolves an index to an offset.
+    /// Point all of them at one entry and every roll of the dice — in every group, at every
+    /// weight — lands on our audio. The randomisation is left completely intact and simply
+    /// has nothing left to choose between.</para>
+    /// <para>It also disposes of the empty stub entries (<see cref="FormatEmpty"/>) for free,
+    /// since their indices now resolve to real audio too.</para>
+    /// <para>Audio entries are the last thing in the file, so the payload is not bounded by
+    /// the original slot — everything from the first entry's offset onwards is ours.</para>
+    /// </remarks>
+    public static byte[] PointAllAudioAtOneEntry(
+        Template template,
+        ReadOnlySpan<short> pcm,
+        uint sampleRate,
+        uint format,
+        out string note)
+        => PointAudioAtOneEntry(template, null, pcm, sampleRate, format, out note);
+
+    /// <summary>
+    /// As above, but retargets only the audio indices in <paramref name="audioIndices"/>.
+    /// </summary>
+    /// <param name="audioIndices">Indices to redirect, or null for all of them.</param>
+    /// <remarks>
+    /// <para><b>Why you almost always want a subset.</b> A battle-voice file is not one pool
+    /// of interchangeable grunts. Confirmed in game 2026-08-17, and matching the parsed
+    /// group table exactly: <c>soundNumber</c> 1 is damage-taken, 2 is death, 0 and 3 are
+    /// attack. Retargeting everything would make the player's voiceline fire every time they
+    /// took a hit or died.</para>
+    /// <para>Restricting the rewrite to the indices one group can reach leaves the other
+    /// banks completely intact — the character still grunts normally when hurt and killed,
+    /// while the action voice becomes ours.</para>
+    /// <para>The clip is <em>appended</em> past the end of the original file rather than
+    /// overwriting entry 0, so every byte the untouched indices depend on survives, and the
+    /// payload has no length limit either way.</para>
+    /// </remarks>
+    public static byte[] PointAudioAtOneEntry(
+        Template template,
+        IReadOnlySet<int>? audioIndices,
+        ReadOnlySpan<short> pcm,
+        uint sampleRate,
+        uint format,
+        out string note)
+        => PointAudioAtOneEntry(
+            template,
+            audioIndices,
+            format == FormatMsAdPcm
+                ? AudioPayload.MsAdPcmMono(pcm, sampleRate)
+                : AudioPayload.Pcm16(pcm, sampleRate),
+            out note);
+
+    /// <summary>As above, taking an already-encoded payload with its own codec header.</summary>
+    public static byte[] PointAudioAtOneEntry(
+        Template template,
+        IReadOnlySet<int>? audioIndices,
+        AudioPayload payload,
+        out string note)
+    {
+        var original = template.Bytes;
+        var entryOffset = Align(original.Length, 16);
+
+        var bytes = new byte[entryOffset + payload.TotalLength];
+        Array.Copy(original, bytes, original.Length);
+
+        var span = bytes.AsSpan();
+        var retargeted = 0;
+        for (var i = 0; i < template.AudioOffsets.Length; i++)
+        {
+            if (audioIndices is not null && !audioIndices.Contains(i))
+            {
+                continue;
+            }
+
+            BinaryPrimitives.WriteUInt32LittleEndian(
+                span[(template.AudioTableOffset + (i * 4))..], (uint)entryOffset);
+            retargeted++;
+        }
+
+        WriteAudioEntry(bytes, entryOffset, payload);
+        PatchSizeField(bytes);
+
+        var scope = audioIndices is null
+            ? $"all {template.AudioOffsets.Length}"
+            : $"{retargeted} of {template.AudioOffsets.Length}";
+
+        note = $"{scope} audio indices now resolve to a new entry appended at 0x{entryOffset:X}; " +
+               $"{payload.Describe(payload.SampleRate)}; file {bytes.Length} bytes — " +
+               "every original byte preserved";
+
+        return bytes;
+    }
+
+    /// <summary>Writes the 32-byte entry header, its codec header, then the audio.</summary>
+    private static void WriteAudioEntry(byte[] bytes, int start, AudioPayload payload)
+    {
+        var span = bytes.AsSpan();
+
+        BinaryPrimitives.WriteUInt32LittleEndian(span[(start + 0x00)..], (uint)payload.Data.Length);
+        BinaryPrimitives.WriteUInt32LittleEndian(span[(start + 0x04)..], payload.Channels);
+        BinaryPrimitives.WriteUInt32LittleEndian(span[(start + 0x08)..], payload.SampleRate);
+        BinaryPrimitives.WriteUInt32LittleEndian(span[(start + 0x0C)..], payload.Format);
+        BinaryPrimitives.WriteUInt32LittleEndian(span[(start + 0x10)..], 0u); // LoopStart
+        BinaryPrimitives.WriteUInt32LittleEndian(span[(start + 0x14)..], 0u); // LoopEnd
+        BinaryPrimitives.WriteUInt32LittleEndian(span[(start + 0x18)..], (uint)payload.SubInfo.Length);
+        BinaryPrimitives.WriteUInt32LittleEndian(span[(start + 0x1C)..], 0u); // Flags
+
+        payload.SubInfo.CopyTo(span[(start + 32)..]);
+        payload.Data.CopyTo(span[(start + 32 + payload.SubInfo.Length)..]);
+    }
+
+    /// <summary>
+    /// Retargets audio indices at another entry <em>that already exists in the file</em>,
+    /// adding no audio of our own.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>The control that separates the container edit from the codec.</b> Every
+    /// other authored mode changes two things at once: it rewrites the offset table
+    /// <em>and</em> introduces bytes we encoded. If the result is silent, those are
+    /// indistinguishable.</para>
+    /// <para>This changes only the offset table. The audio it points at is the game's own
+    /// HCA, which the engine demonstrably plays. So: hearing the wrong bank means the
+    /// surgery and the redirect both work and the sole remaining suspect is our payload;
+    /// hearing the normal bank, or nothing, means the file never reached the engine and the
+    /// payload was never the problem.</para>
+    /// </remarks>
+    public static byte[] PointAudioAtExistingEntry(
+        Template template,
+        IReadOnlySet<int> audioIndices,
+        int targetIndex,
+        out string note)
+    {
+        var bytes = (byte[])template.Bytes.Clone();
+        var span = bytes.AsSpan();
+        var target = template.AudioOffsets[targetIndex];
+
+        var retargeted = 0;
+        foreach (var index in audioIndices)
+        {
+            if (index < 0 || index >= template.AudioOffsets.Length)
+            {
+                continue;
+            }
+
+            BinaryPrimitives.WriteUInt32LittleEndian(
+                span[(template.AudioTableOffset + (index * 4))..], target);
+            retargeted++;
+        }
+
+        note = $"{retargeted} audio indices retargeted at existing entry {targetIndex} " +
+               $"(0x{target:X}); file length unchanged, not one byte of audio is ours";
+
+        return bytes;
+    }
+
+    /// <summary>
+    /// Appends a byte-for-byte copy of an existing audio entry past the end of the file and
+    /// retargets indices at the copy.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>The middle rung.</b> Three things change between an untouched file and one
+    /// carrying our clip: the offset table is rewritten, an entry is appended past the
+    /// original end of file, and that entry holds audio we encoded. Testing all three at
+    /// once is what has made every silent result unreadable.</para>
+    /// <para><see cref="PointAudioAtExistingEntry"/> isolates the first. This isolates the
+    /// second: the appended entry is the game's own HCA, copied verbatim, so if it plays
+    /// then appending past EOF is sound and only the codec is left. If it does not, the
+    /// engine will not follow an offset past the original file length and no encoder would
+    /// ever have helped.</para>
+    /// </remarks>
+    public static byte[] AppendCopyOfEntry(
+        Template template,
+        IReadOnlySet<int> audioIndices,
+        int sourceIndex,
+        out string note)
+    {
+        var original = template.Bytes;
+        var source = (int)template.AudioOffsets[sourceIndex];
+        var span = original.AsSpan();
+
+        var dataLength = (int)BinaryPrimitives.ReadUInt32LittleEndian(span[source..]);
+        var subInfoSize = (int)BinaryPrimitives.ReadUInt32LittleEndian(span[(source + 0x18)..]);
+        var entryLength = 32 + subInfoSize + dataLength;
+
+        if (source + entryLength > original.Length)
+        {
+            throw new InvalidOperationException(
+                $"audio entry {sourceIndex} claims {entryLength} bytes but runs past the end of the file");
+        }
+
+        var appendAt = Align(original.Length, 16);
+        var bytes = new byte[appendAt + entryLength];
+        Array.Copy(original, bytes, original.Length);
+        Array.Copy(original, source, bytes, appendAt, entryLength);
+
+        var outSpan = bytes.AsSpan();
+        var retargeted = 0;
+        foreach (var index in audioIndices)
+        {
+            if (index < 0 || index >= template.AudioOffsets.Length)
+            {
+                continue;
+            }
+
+            BinaryPrimitives.WriteUInt32LittleEndian(
+                outSpan[(template.AudioTableOffset + (index * 4))..], (uint)appendAt);
+            retargeted++;
+        }
+
+        PatchSizeField(bytes);
+
+        note = $"copied audio entry {sourceIndex} ({entryLength} bytes: 32 header + {subInfoSize} codec " +
+               $"+ {dataLength} data) to 0x{appendAt:X}, past the original end of file; " +
+               $"{retargeted} indices retargeted at the copy. The audio is the game's own.";
 
         return bytes;
     }
