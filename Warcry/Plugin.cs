@@ -213,8 +213,16 @@ public sealed class Plugin : IDalamudPlugin
             }
         }
 
-        if (drop != DropStage.None || !this.Config.PlayTestToneOnActions)
+        if (drop != DropStage.None)
         {
+            return;
+        }
+
+        if (!this.Config.PlayTestToneOnActions)
+        {
+            // Counted rather than returned silently. This is the commonest cause of
+            // "I hear nothing", and it used to leave no trace anywhere in the UI.
+            this.Diag.Drop(DropStage.PlaybackOff);
             return;
         }
 
@@ -285,6 +293,13 @@ public sealed class Plugin : IDalamudPlugin
         {
             // Stamped on success only, so an unmapped action does not eat the window.
             this.Throttle.Mark(ev.CasterEntityId);
+        }
+        else
+        {
+            // Every sink refused: at the concurrency cap, muted by the game's own sliders,
+            // or no output device. Previously invisible — the row read "ok" and nothing
+            // came out of the speakers.
+            this.Diag.Drop(DropStage.SinkFull);
         }
     }
 
@@ -383,6 +398,116 @@ public sealed class Plugin : IDalamudPlugin
         {
             Log.Error(ex, "dumpscd failed for {Path}", gamePath);
         }
+    }
+
+    /// <summary>
+    /// The first reason nothing would be heard right now, or empty if nothing is blocking.
+    /// </summary>
+    /// <remarks>
+    /// <para>"I don't hear the sounds I mapped" has about eight distinct causes, most of
+    /// them switches the user set themselves — including the spike tab's own "silence the
+    /// plugin" button. Working through them by hand means knowing which of eight places to
+    /// look, so this checks them in the order the pipeline does and names the first one
+    /// that would stop a line.</para>
+    /// <para>Ordered deliberately: the checks a user can fix come before the ones they
+    /// cannot.</para>
+    /// </remarks>
+    public string ExplainSilence()
+    {
+        if (!this.Config.Enabled)
+        {
+            return "\"Warcry enabled\" is off, on the Settings tab. Nothing is detected or played.";
+        }
+
+        if (!this.Config.PlayTestToneOnActions)
+        {
+            return "\"Play clips on my actions\" is off, on the Settings tab. Actions are still " +
+                   "detected — the Events tab keeps filling — but nothing is played. The spike " +
+                   "tab's \"silence the plugin for this test\" button turns this off.";
+        }
+
+        if (!this.Watcher.Installed)
+        {
+            return "The action hook did not install, so no action is ever detected. Expected " +
+                   "after a game patch; wait for a FFXIVClientStructs update.";
+        }
+
+        if (!this.Sink.Available)
+        {
+            return $"No audio sink is available: {this.Sink.Status}";
+        }
+
+        var gameGain = this.Volume.GainFor(0, this.Config.UseVoiceSliderNotSe);
+        if (gameGain <= 0.0001f)
+        {
+            var bus = this.Config.UseVoiceSliderNotSe ? "Voice" : "Sound Effects";
+            return $"The game's own volume settings multiply out to zero (Master {this.Volume.Master}, " +
+                   $"{bus} {(this.Config.UseVoiceSliderNotSe ? this.Volume.Voice : this.Volume.Se)}, " +
+                   $"Player {this.Volume.Player}) — or one of them is muted.";
+        }
+
+        if (this.Config.MasterGain <= 0.0001f)
+        {
+            return "Plugin volume is at zero, on the Settings tab.";
+        }
+
+        if (this.Gates.IsSuppressed())
+        {
+            return $"Playback is gated right now: {this.Gates.Reason}. That is a live condition, " +
+                   "not a setting — it will clear on its own.";
+        }
+
+        if (this.Clips.Count == 0)
+        {
+            return "No clips have been imported. Use the Clips tab.";
+        }
+
+        var rules = 0;
+        foreach (var profile in this.Profiles.Profiles)
+        {
+            if (profile.Enabled)
+            {
+                foreach (var rule in profile.Rules)
+                {
+                    if (rule.Enabled && rule.Clips.Count > 0)
+                    {
+                        rules++;
+                    }
+                }
+            }
+        }
+
+        if (rules == 0)
+        {
+            return "No enabled mapping has a clip attached. Use the Mappings tab.";
+        }
+
+        // Nothing is blocking as a matter of configuration, so point at the counters, which
+        // record what actually happened to recent events.
+        var noClip = this.Diag.DropCount(DropStage.NoClip);
+        var throttled = this.Diag.DropCount(DropStage.Throttle);
+        var sinkFull = this.Diag.DropCount(DropStage.SinkFull);
+
+        if (noClip > 0 && noClip >= throttled && noClip >= sinkFull)
+        {
+            return $"Nothing is blocking playback, but {noClip} event(s) resolved to no clip — " +
+                   "the actions you are using are not the ones your mappings cover. The Events " +
+                   "tab shows the ActionId that actually fired.";
+        }
+
+        if (throttled > 0 && throttled >= sinkFull)
+        {
+            return $"Nothing is blocking playback, but {throttled} event(s) were throttled — " +
+                   "cooldown, auto-attack skip, casts-only, or a muted action.";
+        }
+
+        if (sinkFull > 0)
+        {
+            return $"Nothing is blocking playback, but {sinkFull} event(s) were refused by the " +
+                   "sink — usually the \"max at once\" cap.";
+        }
+
+        return string.Empty;
     }
 
     /// <summary>The synthesised tone is deterministic, so it caches like any other clip.</summary>

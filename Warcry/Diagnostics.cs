@@ -12,8 +12,20 @@ public enum DropStage : byte
     Audience = 3,
     Throttle = 4,
     NoClip = 5,
+
+    /// <summary>Every sink refused the request — full, muted, or unavailable.</summary>
     SinkFull = 6,
     Gate = 7,
+
+    /// <summary>
+    /// Playback is switched off, so the event was detected and deliberately not played.
+    /// </summary>
+    /// <remarks>
+    /// Its own stage because it is the single most common reason for "I hear nothing" and
+    /// used to be indistinguishable from a bug: the early return recorded no drop at all,
+    /// so the Events tab said "ok" for a line that never sounded.
+    /// </remarks>
+    PlaybackOff = 8,
 }
 
 public readonly struct DiagRow

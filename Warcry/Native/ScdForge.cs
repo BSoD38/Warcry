@@ -20,15 +20,15 @@ public sealed class ForgedClip
     public required float Seconds { get; init; }
 
     /// <summary>
-    /// Whether the engine has been asked for this path at least once.
+    /// When the engine was first asked for this path, or 0 if it has not been.
     /// </summary>
     /// <remarks>
-    /// Resource loading is asynchronous, so the first request for a path returns before the
-    /// bytes are in memory and produces nothing audible. Rather than pretend otherwise, the
-    /// first play is used as the warm-up and reported as a refusal so the caller can fall
-    /// back for that one line.
+    /// Resource loading is asynchronous: the first request for a path returns before the
+    /// bytes are in memory and produces nothing audible. The warm-up is issued the moment
+    /// the clip is registered rather than being charged to a real play, so by the time a
+    /// line actually needs it — at least a throttle cooldown later — it is loaded.
     /// </remarks>
-    public bool Warm { get; set; }
+    public long WarmedAt { get; set; }
 }
 
 /// <summary>
@@ -129,6 +129,27 @@ public sealed class ScdForge
             lock (this.gate)
             {
                 return this.byVariant.Count;
+            }
+        }
+    }
+
+    /// <summary>Clips the engine has been asked for at least once, so are loadable now.</summary>
+    public int WarmedCount
+    {
+        get
+        {
+            lock (this.gate)
+            {
+                var warmed = 0;
+                foreach (var clip in this.byVariant.Values)
+                {
+                    if (clip.WarmedAt != 0)
+                    {
+                        warmed++;
+                    }
+                }
+
+                return warmed;
             }
         }
     }
@@ -344,11 +365,14 @@ public sealed class ScdForge
     /// Registers anything that finished encoding. Main thread only — Penumbra IPC is not
     /// safe to call from a worker.
     /// </summary>
-    public void Pump()
+    /// <returns>
+    /// Clips registered by this call, which the caller must warm. Empty most frames.
+    /// </returns>
+    public IReadOnlyList<ForgedClip> Pump()
     {
         if (this.completed.IsEmpty)
         {
-            return;
+            return [];
         }
 
         var added = 0;
@@ -361,7 +385,7 @@ public sealed class ScdForge
 
         if (added == 0)
         {
-            return;
+            return [];
         }
 
         // AddTemporaryModAll replaces the whole set for our tag, so the entire dictionary
@@ -385,7 +409,7 @@ public sealed class ScdForge
 
             this.pendingRegistration.Clear();
             this.Refresh();
-            return;
+            return [];
         }
 
         if (code.Value != 0)
@@ -396,22 +420,28 @@ public sealed class ScdForge
                 this.redirects.Count);
         }
 
+        var registered = new List<ForgedClip>(this.pendingRegistration.Count);
+
         lock (this.gate)
         {
             foreach (var item in this.pendingRegistration)
             {
-                this.byVariant[item.VariantKey] = new ForgedClip
+                var clip = new ForgedClip
                 {
                     VariantKey = item.VariantKey,
                     GamePath = item.GamePath,
                     LocalPath = item.LocalPath,
                     Seconds = item.Seconds,
                 };
+
+                this.byVariant[item.VariantKey] = clip;
+                registered.Add(clip);
             }
         }
 
         this.pendingRegistration.Clear();
         this.Refresh();
+        return registered;
     }
 
     /// <summary>

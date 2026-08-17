@@ -49,6 +49,9 @@ public sealed class CompositeVoiceSink : IVoiceSink
     /// <summary>How many fell through to the managed sink.</summary>
     public long ManagedPlays { get; private set; }
 
+    /// <summary>Why the native sink last declined, so a fallback is explainable.</summary>
+    public string NativeRefusal => this.native.LastRefusal;
+
     public string Name => this.NativeActive ? "Native + managed" : "Managed";
 
     public string Status

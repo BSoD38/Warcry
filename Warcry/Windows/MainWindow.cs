@@ -390,6 +390,15 @@ public sealed class MainWindow : Window, IDisposable
         var cfg = this.plugin.Config;
         var dirty = false;
 
+        // The one question this tab exists to answer, answered before anything else on it.
+        var silence = this.plugin.ExplainSilence();
+        if (silence.Length > 0)
+        {
+            ImGui.TextUnformatted("Why you are not hearing anything:");
+            ImGui.TextWrapped($"  {silence}");
+            ImGui.Separator();
+        }
+
         // ---- the master switch, and the audio settings that used to hide on the
         // diagnostics tab where nobody would look for them ----
         var enabled = cfg.Enabled;
@@ -600,7 +609,11 @@ public sealed class MainWindow : Window, IDisposable
 
         ImGui.Separator();
         ImGui.TextUnformatted("Drops by stage (this session)");
-        foreach (var stage in new[] { DropStage.Gate, DropStage.Throttle, DropStage.NoClip, DropStage.NotPc, DropStage.NotAction })
+        foreach (var stage in new[]
+                 {
+                     DropStage.PlaybackOff, DropStage.Gate, DropStage.Throttle,
+                     DropStage.NoClip, DropStage.SinkFull, DropStage.NotPc, DropStage.NotAction,
+                 })
         {
             var n = this.plugin.Diag.DropCount(stage);
             if (n > 0)
@@ -672,12 +685,31 @@ public sealed class MainWindow : Window, IDisposable
             return;
         }
 
-        var composite = this.plugin.Composite;
-        if (cfg.PreferNativeSink)
+        if (!cfg.PreferNativeSink)
         {
-            ImGui.TextDisabled($"  {composite.NativePlays} line(s) via the engine, " +
-                               $"{composite.ManagedPlays} via NAudio, " +
-                               $"{this.plugin.Forge.Count} clip(s) encoded.");
+            return;
+        }
+
+        var composite = this.plugin.Composite;
+        var forge = this.plugin.Forge;
+
+        ImGui.TextDisabled($"  {composite.NativePlays} line(s) via the engine, " +
+                           $"{composite.ManagedPlays} via NAudio, " +
+                           $"{forge.Count} clip(s) encoded, {forge.WarmedCount} warmed.");
+
+        // The failure this reports is the one that actually happened: a clip's first use
+        // always falls back while it encodes, which looks identical to native being broken.
+        if (composite.NativeRefusal.Length > 0)
+        {
+            ImGui.TextDisabled($"  Last fallback: {composite.NativeRefusal}");
+        }
+
+        if (composite.NativePlays == 0 && forge.Count > 0)
+        {
+            ImGui.TextWrapped(
+                "  Clips are encoded but nothing has gone through the engine yet. The first use " +
+                "of each clip is always served by NAudio while it encodes in the background — " +
+                "use the same action a second time.");
         }
     }
 

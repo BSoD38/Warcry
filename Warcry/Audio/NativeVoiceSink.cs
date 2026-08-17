@@ -42,6 +42,16 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
     /// </remarks>
     private const double TailSeconds = 0.25;
 
+    /// <summary>
+    /// How long a warm-up is given to land before the path is trusted for a real play.
+    /// </summary>
+    /// <remarks>
+    /// A local file behind a Penumbra redirect loads in well under this. The window only
+    /// matters when a clip is forged and used almost immediately; the throttle cooldown is
+    /// an order of magnitude longer in normal play.
+    /// </remarks>
+    private const double WarmGraceSeconds = 0.25;
+
     private readonly IPluginLog log;
     private readonly Configuration config;
     private readonly ScdForge forge;
@@ -75,16 +85,27 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
 
     public int ActiveVoices => this.voiceEndsAt.Count;
 
+    /// <summary>
+    /// Why the last request was not played natively, or empty if it was.
+    /// </summary>
+    /// <remarks>
+    /// Every path out of <see cref="TryPlay"/> sets this. A silent boolean was enough to
+    /// hide a three-play warm-up ramp behind what looked like "native does not work".
+    /// </remarks>
+    public string LastRefusal { get; private set; } = string.Empty;
+
     public bool TryPlay(in VoiceRequest request)
     {
         if (string.IsNullOrEmpty(request.VariantKey))
         {
             // Nothing stable to content-address, so it can neither be cached nor served.
+            this.LastRefusal = "the request has no variant key, so it cannot be encoded";
             return false;
         }
 
         if (this.voiceEndsAt.Count >= this.config.MaxConcurrent)
         {
+            this.LastRefusal = $"at the concurrency cap ({this.config.MaxConcurrent})";
             return false;
         }
 
@@ -92,17 +113,34 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
         var gain = Math.Clamp(request.Gain * this.config.MasterGain, 0f, 2f);
         if (gain <= 0.0001f)
         {
+            this.LastRefusal = "gain is zero";
             return false;
         }
 
         if (!this.forge.TryForge(request.VariantKey, request.CreateSource, out var clip) || clip is null)
         {
+            this.LastRefusal = "clip is still encoding (first use of a clip always falls back)";
             return false;
         }
 
         var manager = SoundManager.Instance();
         if (manager == null)
         {
+            this.LastRefusal = "SoundManager is not available";
+            return false;
+        }
+
+        // The warm-up is issued at registration, not charged to a play. If one has not
+        // happened yet, or has not had time to land, let the managed sink take this line.
+        if (clip.WarmedAt == 0)
+        {
+            this.LastRefusal = "clip encoded but not yet warmed — the next frame will warm it";
+            return false;
+        }
+
+        if (Stopwatch.GetTimestamp() - clip.WarmedAt < (long)(WarmGraceSeconds * Stopwatch.Frequency))
+        {
+            this.LastRefusal = "clip warmed a moment ago; giving the resource time to load";
             return false;
         }
 
@@ -110,7 +148,7 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
         {
             var result = manager->PlaySound(
                 clip.GamePath,
-                clip.Warm ? gain : 0f,
+                gain,
                 0u,
                 request.Position.X, request.Position.Y, request.Position.Z,
                 1.0f,                       // pitch is baked into the encoded samples
@@ -127,24 +165,19 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
 
             if (result == null)
             {
+                this.LastRefusal = "the engine had no free sound slot";
                 this.log.Warning("NativeVoiceSink: no pool slot for {Path}", clip.GamePath);
-                return false;
-            }
-
-            if (!clip.Warm)
-            {
-                // This play was the resource load. It made no sound, so refuse and let the
-                // caller fall back for this one line; every later play of this clip is real.
-                clip.Warm = true;
                 return false;
             }
 
             this.voiceEndsAt.Add(
                 Stopwatch.GetTimestamp() + (long)((clip.Seconds + TailSeconds) * Stopwatch.Frequency));
+            this.LastRefusal = string.Empty;
             return true;
         }
         catch (Exception ex)
         {
+            this.LastRefusal = $"PlaySound threw: {ex.Message}";
             this.log.Error(ex, "NativeVoiceSink: PlaySound threw for {Path}", clip.GamePath);
             return false;
         }
@@ -154,7 +187,10 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
     {
         // Registers anything the background encoder finished. Must be the game thread:
         // Penumbra IPC is not safe to call from a worker.
-        this.forge.Pump();
+        foreach (var clip in this.forge.Pump())
+        {
+            this.Warm(clip);
+        }
 
         if (this.voiceEndsAt.Count == 0)
         {
@@ -168,6 +204,55 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
             {
                 this.voiceEndsAt.RemoveAt(i);
             }
+        }
+    }
+
+    /// <summary>
+    /// Asks the engine for a freshly registered path at zero volume, purely to make it load.
+    /// </summary>
+    /// <remarks>
+    /// <para>This exists because the first request for any path returns before the resource
+    /// is in memory. Doing it here, the instant the redirect is registered, means the cost
+    /// lands on an idle frame instead of on a voiceline.</para>
+    /// <para>The earlier design charged the warm-up to the first real play and refused that
+    /// line — which, combined with the encode also costing a play, meant the <b>third</b>
+    /// use of a given clip was the first one you actually heard through the engine. With
+    /// several mapped actions and a cooldown between them, that ramp is long enough to look
+    /// exactly like the native path not working at all.</para>
+    /// </remarks>
+    private void Warm(ForgedClip clip)
+    {
+        var manager = SoundManager.Instance();
+        if (manager == null)
+        {
+            return;
+        }
+
+        try
+        {
+            manager->PlaySound(
+                clip.GamePath,
+                0f,
+                0u,
+                0f, 0f, 0f,
+                1.0f,
+                0,
+                0u,
+                true,
+                SoundVolumeCategory.Player,
+                false,
+                -1,
+                false,
+                false,
+                false,      // non-positional: this is a load, not a sound
+                false);
+
+            clip.WarmedAt = Stopwatch.GetTimestamp();
+            this.log.Information("NativeVoiceSink: warmed {Path}", clip.GamePath);
+        }
+        catch (Exception ex)
+        {
+            this.log.Error(ex, "NativeVoiceSink: warming {Path} failed", clip.GamePath);
         }
     }
 
