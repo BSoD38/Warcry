@@ -327,6 +327,11 @@ public sealed class ScdForge
                 // Every index, so soundNumber 0 cannot miss. This is our own path.
                 var scd = ScdWriter.PointAudioAtOneEntry(snapshot, null, payload, out _);
 
+                // A battle-voice container is authored to be intermittent — that is what
+                // makes a character grunt on some swings and not others. Cloning one
+                // inherits it, which presents as the native path firing only occasionally.
+                ScdInspector.ForceDeterministicPlayback(scd, out var certainty);
+
                 var name = ContentHash(scd);
                 var localPath = Path.Combine(this.cacheDir, $"{name}.scd");
 
@@ -341,7 +346,11 @@ public sealed class ScdForge
                     new Encoded(variantKey, $"sound/vfx/warcry/clip/{name}.scd", localPath, seconds));
 
                 this.log.Information(
-                    "ScdForge: encoded {Key} ({Bytes} bytes, {Seconds:0.00}s)", variantKey, scd.Length, seconds);
+                    "ScdForge: encoded {Key} ({Bytes} bytes, {Seconds:0.00}s); {Certainty}",
+                    variantKey,
+                    scd.Length,
+                    seconds,
+                    certainty);
             }
             catch (Exception ex) when (!this.shutDown)
             {

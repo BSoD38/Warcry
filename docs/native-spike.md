@@ -34,6 +34,36 @@ codec the engine does not implement.
 **What is left is engineering, not research.** PLAN.md §6 criteria (b)–(e) — master slider,
 Voice/SE slider, positional attenuation, 20-plays-in-10s — have still never been reached.
 
+### A cloned container is authored to be intermittent
+
+Reported after the sink went live: native playback worked but "triggers the actual audio
+very rarely". Two things in the template cause it, and cloning inherits both.
+
+**The group body's float at +0x08 is 0.4335, identical in all five groups.** Read as a
+per-group chance to fire, which is exactly why a character grunts on some swings and not
+others (the Day 2 observation). It is not volume: the 128-byte group *header* blocks hold
+four `1.0` floats, so volume lives there.
+
+⚠ Inferred, not confirmed. But setting it to 1 in a container of our own is safe either way
+— if the reading is right playback becomes certain, and if it is actually a volume our clips
+get louder and the plugin slider compensates.
+
+**Group 0's cumulative weights total 30, not 100.** If the engine rolls against a fixed
+denominator rather than the group's own total, that is a second independent source of loss
+stacked on the first.
+
+`ScdInspector.ForceDeterministicPlayback` fixes both on the forged copy: the chance goes to
+1, and each group's running total is rescaled to end at 100 — correct whichever denominator
+the engine uses, and it moves no offsets, only rewriting `u16`s already in each record.
+Verified idempotent, container still parses, audio entry untouched:
+
+```
+before  group 0: 6 rec, total  30, playChance 0.4335
+after   group 0: 6 rec, total 100, playChance 1      weights [17,33,50,67,83,100]
+```
+
+The inspector now prints `playChance` per group.
+
 ### A real bug the milestone run exposed
 
 Inspecting `sound/battle/mon/13157.scd` (30 groups, 1.1 MB) produced ids like `-16777216`,

@@ -178,6 +178,70 @@ public static class ScdInspector
         _ => "unused; out-of-range values appear to fall back to the attack bank",
     };
 
+    /// <summary>
+    /// Offset in a group body of the float that governs how often the group fires.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ <b>Inferred, not confirmed.</b> Every group in a battle-voice file carries the same
+    /// value here — 0.4335 — and the 128-byte group header blocks hold their volume-looking
+    /// floats at 1.0, so this is not volume. A ~43% chance also matches the observed fact
+    /// that the game does not grunt on every action.
+    /// <para>Setting it to 1 in a container of our own is safe whatever it turns out to be:
+    /// if the reading is right, playback becomes certain; if it is actually a volume, our
+    /// clips get louder and the plugin volume slider compensates.</para>
+    /// </remarks>
+    private const int PlayChanceOffset = 0x08;
+
+    /// <summary>
+    /// Rewrites a cloned container so it plays every time it is asked to.
+    /// </summary>
+    /// <remarks>
+    /// <para>A battle-voice file is authored to be intermittent — that is what makes a
+    /// character grunt on some swings and not others. Cloning one for our own use inherits
+    /// that, which presents as "the native path works, but only fires occasionally".</para>
+    /// <para>Two independent sources of loss are removed: the per-group chance above, and
+    /// the cumulative weights, which in the template sum to 30 rather than 100. Rescaling
+    /// the running total to end at 100 is correct whether the engine rolls against the
+    /// group's own total or against a fixed denominator, and it changes no offsets — only
+    /// the <c>u16</c> already in each record.</para>
+    /// </remarks>
+    public static int ForceDeterministicPlayback(byte[] scd, out string note)
+    {
+        if (!ScdWriter.TryParse(scd, out var template, out var parseError) || template is null)
+        {
+            note = $"not rewritten — {parseError}";
+            return 0;
+        }
+
+        var groups = ParseGroups(template, out var groupError);
+        if (groups.Count == 0)
+        {
+            note = $"not rewritten — no groups could be read ({groupError})";
+            return 0;
+        }
+
+        var span = scd.AsSpan();
+        var rewritten = 0;
+
+        foreach (var group in groups)
+        {
+            BinaryPrimitives.WriteSingleLittleEndian(span[(group.Offset + PlayChanceOffset)..], 1f);
+
+            var recordsAt = group.Offset + GroupBodyHeaderSize;
+            for (var i = 0; i < group.Records.Count; i++)
+            {
+                var cumulative = (ushort)Math.Round(100.0 * (i + 1) / group.Records.Count);
+                BinaryPrimitives.WriteUInt16LittleEndian(
+                    span[(recordsAt + (i * RecordSize) + 4)..], cumulative);
+            }
+
+            rewritten++;
+        }
+
+        note = $"{rewritten} group(s) forced to always play, weights rescaled to total 100";
+        return rewritten;
+    }
+
     /// <summary>Every audio index one group can roll, for a scoped retarget.</summary>
     /// <remarks>
     /// The point of retargeting a subset: leave the damage and death banks alone so the
@@ -303,8 +367,10 @@ public static class ScdInspector
                 continue;
             }
 
+            var playChance = BitConverter.ToSingle(scd, group.Offset + PlayChanceOffset);
             into.Add($"  soundNumber {group.Id}  @0x{group.Offset:X}  {group.Records.Count} choice(s), " +
-                     $"total weight {group.TotalWeight}   [{DescribeSoundNumber(group.Id)}]");
+                     $"total weight {group.TotalWeight}, playChance {playChance:0.####}   " +
+                     $"[{DescribeSoundNumber(group.Id)}]");
 
             var previous = 0;
             var printed = 0;
