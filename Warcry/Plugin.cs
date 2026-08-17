@@ -99,6 +99,19 @@ public sealed class Plugin : IDalamudPlugin
     public HashSet<uint> ObservedActions { get; } = [];
 
     private bool observedDirty;
+    private double nextObservedFlush = double.PositiveInfinity;
+
+    /// <summary>
+    /// How long after learning a new action to persist the list.
+    /// </summary>
+    /// <remarks>
+    /// Observed actions used to be written only in <see cref="Dispose"/>, so a game crash
+    /// lost everything learned that session — and any mid-session <c>Config.Save()</c> from
+    /// the settings UI wrote the stale list back over it. Debounced rather than immediate
+    /// because <c>SavePluginConfig</c> is synchronous, and because new actions arrive in
+    /// bursts when you first play a job.
+    /// </remarks>
+    private const double ObservedFlushSeconds = 10.0;
 
     private readonly WindowSystem windows = new("Warcry");
     private readonly MainWindow mainWindow;
@@ -106,7 +119,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public Plugin()
     {
-        this.Config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        this.Config = Configuration.LoadOrCreate(PluginInterface, Log);
 
         this.VoiceSlots = VoiceSlotTable.Build(Data, Log);
         this.Volume.Refresh();
@@ -183,6 +196,7 @@ public sealed class Plugin : IDalamudPlugin
             if (ev.ActionId != 0 && this.ObservedActions.Add(ev.ActionId))
             {
                 this.observedDirty = true;
+                this.nextObservedFlush = this.elapsed + ObservedFlushSeconds;
             }
         }
 
@@ -261,6 +275,25 @@ public sealed class Plugin : IDalamudPlugin
         this.Scheduler.Update();
         this.Sink.Update();
         this.Spike.Update();
+
+        if (this.observedDirty && this.elapsed >= this.nextObservedFlush)
+        {
+            this.FlushObservedActions();
+        }
+    }
+
+    /// <summary>Persists the learned action list. Cheap no-op when nothing has changed.</summary>
+    private void FlushObservedActions()
+    {
+        if (!this.observedDirty)
+        {
+            return;
+        }
+
+        this.Config.ObservedActionIds = [.. this.ObservedActions];
+        this.Config.Save();
+        this.observedDirty = false;
+        this.nextObservedFlush = double.PositiveInfinity;
     }
 
     // NOTE: Action<uint> at API 15 — this was Action<ushort> in older Dalamud.
@@ -438,13 +471,8 @@ public sealed class Plugin : IDalamudPlugin
         this.windows.RemoveAllWindows();
         this.mainWindow.Dispose();
 
-        // Persisted here rather than per-cast: SavePluginConfig is synchronous and
-        // writing it from the detour would stutter the game.
-        if (this.observedDirty)
-        {
-            this.Config.ObservedActionIds = [.. this.ObservedActions];
-        }
-
-        PluginInterface.SavePluginConfig(this.Config);
+        // Catch anything learned inside the last debounce window. Never from the detour
+        // itself: SavePluginConfig is synchronous and would stutter the game.
+        this.FlushObservedActions();
     }
 }

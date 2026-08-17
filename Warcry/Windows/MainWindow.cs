@@ -220,7 +220,10 @@ public sealed class MainWindow : Window, IDisposable
                                     | ImGuiTableFlags.Resizable
                                     | ImGuiTableFlags.SizingStretchProp;
 
-        if (!ImGui.BeginTable("##events", 10, flags, ImGui.GetContentRegionAvail()))
+        var muted = this.plugin.Config.MutedActionIds;
+        uint? toggleMute = null;
+
+        if (!ImGui.BeginTable("##events", 11, flags, ImGui.GetContentRegionAvail()))
         {
             return;
         }
@@ -237,6 +240,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TableSetupColumn("Cast / +left", ImGuiTableColumnFlags.WidthFixed, 108);
         ImGui.TableSetupColumn("Voice", ImGuiTableColumnFlags.WidthFixed, 96);
         ImGui.TableSetupColumn("Drop", ImGuiTableColumnFlags.WidthFixed, 76);
+        ImGui.TableSetupColumn("Mute", ImGuiTableColumnFlags.WidthFixed, 62);
         ImGui.TableSetupScrollFreeze(0, 1);
         ImGui.TableHeadersRow();
 
@@ -337,9 +341,46 @@ public sealed class MainWindow : Window, IDisposable
             {
                 ImGui.TextDisabled(row.Drop.ToString());
             }
+
+            // Mute, from the row where you just heard the thing you did not want.
+            // This is the only way MutedActionIds can be populated at all — before it
+            // existed the config field and the Throttle check were both unreachable.
+            ImGui.TableNextColumn();
+            if (ev.ActionId == 0)
+            {
+                ImGui.TextDisabled("-");
+            }
+            else if (muted.Contains(ev.ActionId))
+            {
+                if (ImGui.SmallButton($"unmute##m{i}"))
+                {
+                    toggleMute = ev.ActionId;
+                }
+            }
+            else if (ImGui.SmallButton($"mute##m{i}"))
+            {
+                toggleMute = ev.ActionId;
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip(
+                    $"Never play anything for action {ev.ActionId} ({this.ActionName(ev.ActionId)}),\n" +
+                    "whatever is mapped to it. Reversible here or on the Settings tab.");
+            }
         }
 
         ImGui.EndTable();
+
+        if (toggleMute is { } id)
+        {
+            if (!muted.Remove(id))
+            {
+                muted.Add(id);
+            }
+
+            this.plugin.Config.Save();
+        }
     }
 
     // --------------------------------------------------------------- Settings
@@ -349,7 +390,74 @@ public sealed class MainWindow : Window, IDisposable
         var cfg = this.plugin.Config;
         var dirty = false;
 
+        // ---- the master switch, and the audio settings that used to hide on the
+        // diagnostics tab where nobody would look for them ----
+        var enabled = cfg.Enabled;
+        if (ImGui.Checkbox("Warcry enabled", ref enabled))
+        {
+            cfg.Enabled = enabled;
+            dirty = true;
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip("Off stops everything: no detection work, no clips, no scheduling.");
+        }
+
+        ImGui.Separator();
+        ImGui.TextUnformatted("Volume");
+
+        var gain = cfg.MasterGain;
+        ImGui.SetNextItemWidth(220);
+        if (ImGui.SliderFloat("Plugin volume", ref gain, 0f, 2f, "%.2f"))
+        {
+            cfg.MasterGain = gain;
+        }
+
+        // Save on release, not per frame. SavePluginConfig is synchronous and writes
+        // through IReliableFileStorage, so saving while a slider is dragged writes the
+        // whole config on every frame of the drag.
+        if (ImGui.IsItemDeactivatedAfterEdit())
+        {
+            dirty = true;
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip(
+                "A trim on top of the game's own sliders, which are always applied first.\n" +
+                "1.00 means 'exactly as loud as the game would play it'.");
+        }
+
+        cfg.UseVoiceSliderNotSe = Toggle("Follow the Voice slider", cfg.UseVoiceSliderNotSe, ref dirty,
+            "On: plugin audio scales with the game's Voice volume.\n" +
+            "Off: it scales with Sound Effects instead.\n\n" +
+            "Voice is the better match for voicelines — it is the slider a user reaches for\n" +
+            "when they want dialogue quieter without deadening combat.");
+
+        cfg.WaitForCastToFinish = Toggle("Wait for the cast bar to finish", cfg.WaitForCastToFinish, ref dirty,
+            "The action packet arrives about a slidecast window before the bar visually\n" +
+            "completes, so without this a cast line fires early. Instants self-gate: no cast\n" +
+            "bar means no delay.");
+
+        cfg.FallBackToTestTone = Toggle("Test tone for unmapped actions", cfg.FallBackToTestTone, ref dirty,
+            "Plays the synthesised tone when an action has no clip. Audible proof the action\n" +
+            "was detected while you are setting mappings up, and noise once you are done.");
+
+        cfg.PlayTestToneOnActions = Toggle("Play clips on my actions", cfg.PlayTestToneOnActions, ref dirty,
+            "Off keeps detection and the Events tab running but plays nothing — which is what\n" +
+            "you want while diagnosing, since it removes the plugin as a source of sound\n" +
+            "without turning off the machinery you are trying to watch.\n\n" +
+            "'Warcry enabled' above is the harder switch: that one stops detection too.");
+
+        ImGui.Separator();
         ImGui.TextUnformatted("When to stay quiet");
+
+        // Evaluate live. Gates.Reason is only written when a cast is processed, so reading
+        // the cached value showed the reason from the last action you used rather than the
+        // state you are in now — which reads as a bug when you walk into a cutscene and the
+        // line still says "not suppressed".
+        this.plugin.Gates.IsSuppressed();
 
         var suppressed = this.plugin.Gates.Reason;
         if (suppressed.Length > 0)
@@ -450,11 +558,37 @@ public sealed class MainWindow : Window, IDisposable
                 "capped low on purpose.");
         }
 
-        if (cfg.MutedActionIds.Count > 0)
+        ImGui.Separator();
+        ImGui.TextUnformatted("Muted actions");
+
+        if (cfg.MutedActionIds.Count == 0)
         {
-            ImGui.Separator();
-            ImGui.TextUnformatted($"{cfg.MutedActionIds.Count} action(s) muted");
-            ImGui.SameLine();
+            ImGui.TextDisabled("  None. Use the Mute button on a row in the Events tab.");
+        }
+        else
+        {
+            ImGui.TextDisabled($"  {cfg.MutedActionIds.Count} action(s) never play, whatever is mapped to them.");
+
+            // Individually removable. Previously the only control was "Unmute all", so one
+            // mis-click meant redoing the whole list.
+            uint? unmute = null;
+            foreach (var id in cfg.MutedActionIds.OrderBy(x => x))
+            {
+                if (ImGui.SmallButton($"unmute##{id}"))
+                {
+                    unmute = id;
+                }
+
+                ImGui.SameLine();
+                ImGui.TextUnformatted($"{id}  {this.ActionName(id)}");
+            }
+
+            if (unmute is { } removed)
+            {
+                cfg.MutedActionIds.Remove(removed);
+                dirty = true;
+            }
+
             if (ImGui.SmallButton("Unmute all"))
             {
                 cfg.MutedActionIds.Clear();
@@ -553,33 +687,25 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.TextDisabled("                muted by the game's own settings — nothing will play");
         }
 
+        // Diagnostics only. The settings that used to live here — plugin volume, the two
+        // playback toggles — moved to the Settings tab, both because that is where anyone
+        // would look for them and because they saved the whole config on every frame of a
+        // slider drag.
         if (ImGui.Button("Play test tone"))
         {
             this.plugin.PlayTestTone();
         }
 
         ImGui.SameLine();
-        var play = this.plugin.Config.PlayTestToneOnActions;
-        if (ImGui.Checkbox("Tone on my actions", ref play))
-        {
-            this.plugin.Config.PlayTestToneOnActions = play;
-            this.plugin.Config.Save();
-        }
+        ImGui.TextDisabled($"volume {this.plugin.Config.MasterGain:0.00} — change it on the Settings tab");
 
-        ImGui.SameLine();
-        var wait = this.plugin.Config.WaitForCastToFinish;
-        if (ImGui.Checkbox("Wait for cast to finish", ref wait))
+        if (!this.plugin.Config.Enabled)
         {
-            this.plugin.Config.WaitForCastToFinish = wait;
-            this.plugin.Config.Save();
+            ImGui.TextUnformatted("  Warcry is DISABLED in settings — nothing will play.");
         }
-
-        var gain = this.plugin.Config.MasterGain;
-        ImGui.SetNextItemWidth(200);
-        if (ImGui.SliderFloat("Plugin volume", ref gain, 0f, 2f, "%.2f"))
+        else if (!this.plugin.Config.PlayTestToneOnActions)
         {
-            this.plugin.Config.MasterGain = gain;
-            this.plugin.Config.Save();
+            ImGui.TextUnformatted("  Playback on actions is off — detection runs, nothing sounds.");
         }
     }
 

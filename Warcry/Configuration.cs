@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using Dalamud.Configuration;
+using Dalamud.Plugin;
+using Dalamud.Plugin.Services;
 
 namespace Warcry;
 
@@ -19,8 +21,14 @@ namespace Warcry;
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
+    /// <summary>
+    /// The schema version this build writes. Bump it and add a step to
+    /// <see cref="Migrate"/> whenever a field changes meaning or goes away.
+    /// </summary>
+    public const int CurrentVersion = 1;
+
     /// <summary>Schema version. Bump and add an ordered migration step when fields change.</summary>
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = CurrentVersion;
 
     public bool Enabled { get; set; } = true;
 
@@ -89,4 +97,140 @@ public sealed class Configuration : IPluginConfiguration
     public List<uint> ObservedActionIds { get; set; } = [];
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
+
+    /// <summary>
+    /// Reads the stored config, migrates it, and repairs anything unusable.
+    /// </summary>
+    /// <remarks>
+    /// <para>The plain <c>GetPluginConfig() as Configuration ?? new()</c> this replaces had
+    /// two silent failure modes: a config that fails to deserialise resets every setting
+    /// with no word to the user, and a collection property that comes back <c>null</c> —
+    /// which a hand-edited or truncated file will do, since the initialisers here only
+    /// apply to a fresh object — throws a <c>NullReferenceException</c> from inside the
+    /// action hook the first time anything reads it.</para>
+    /// <para>Writes back only when something actually changed, so a normal start does not
+    /// touch the disk. <c>SavePluginConfig</c> is synchronous and writes through
+    /// IReliableFileStorage, so it is not free.</para>
+    /// </remarks>
+    public static Configuration LoadOrCreate(IDalamudPluginInterface pluginInterface, IPluginLog log)
+    {
+        Configuration config;
+
+        try
+        {
+            config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        }
+        catch (Exception ex)
+        {
+            // Better a loud default than a silent one: the user needs to know their
+            // settings are gone rather than wonder why the plugin went quiet.
+            log.Error(ex, "Warcry: the saved configuration could not be read. Starting from defaults.");
+            config = new Configuration();
+        }
+
+        var changed = config.Migrate(log);
+        changed |= config.Repair(log);
+
+        if (changed)
+        {
+            config.Save();
+        }
+
+        return config;
+    }
+
+    /// <summary>
+    /// Walks the version ladder. Each step upgrades by exactly one version so a config from
+    /// any age arrives intact.
+    /// </summary>
+    /// <remarks>
+    /// There are no steps yet — v1 is the first shipped schema. The ladder exists so the
+    /// first field change has an obvious home rather than being bolted on under pressure.
+    /// Add steps as <c>if (this.Version &lt; N) { …; this.Version = N; }</c>, in order.
+    /// </remarks>
+    private bool Migrate(IPluginLog log)
+    {
+        if (this.Version == CurrentVersion)
+        {
+            return false;
+        }
+
+        if (this.Version > CurrentVersion)
+        {
+            // A newer build wrote this. Fields we do not know about survive round-tripping
+            // only by luck, but clobbering the version would make a downgrade-upgrade cycle
+            // skip real migrations later, so leave it and say so.
+            log.Warning(
+                "Warcry: config version {Stored} is newer than this build's {Current}. " +
+                "Leaving it alone; unknown settings may not survive.",
+                this.Version,
+                CurrentVersion);
+            return false;
+        }
+
+        var from = this.Version;
+
+        // -- add ordered migration steps here --
+
+        this.Version = CurrentVersion;
+        log.Information("Warcry: migrated configuration from version {From} to {To}.", from, this.Version);
+        return true;
+    }
+
+    /// <summary>
+    /// Forces every value back into a range the plugin can actually run with.
+    /// </summary>
+    /// <remarks>
+    /// Guards against a hand-edited file, a partial write, and NaN — which propagates
+    /// silently through the gain chain and turns into inaudible output rather than an error.
+    /// </remarks>
+    private bool Repair(IPluginLog log)
+    {
+        var repairs = 0;
+
+        this.BlockedTerritories ??= Fix<HashSet<uint>>(nameof(this.BlockedTerritories));
+        this.MutedActionIds ??= Fix<HashSet<uint>>(nameof(this.MutedActionIds));
+        this.ObservedActionIds ??= Fix<List<uint>>(nameof(this.ObservedActionIds));
+
+        this.MasterGain = Clamp(this.MasterGain, 0f, 4f, 1f, nameof(this.MasterGain));
+        this.SelfCooldownSeconds = Clamp(this.SelfCooldownSeconds, 0f, 60f, 2f, nameof(this.SelfCooldownSeconds));
+
+        // Hard ceiling, not taste: the game's SoundData pool is shared with the whole
+        // client and its Voice bus has five tracks.
+        if (this.MaxConcurrent is < 1 or > 8)
+        {
+            log.Warning(
+                "Warcry: MaxConcurrent was {Value}; clamped into 1-8.", this.MaxConcurrent);
+            this.MaxConcurrent = Math.Clamp(this.MaxConcurrent, 1, 8);
+            repairs++;
+        }
+
+        return repairs > 0;
+
+        T Fix<T>(string name) where T : new()
+        {
+            log.Warning("Warcry: {Field} was null in the saved config; replaced with an empty one.", name);
+            repairs++;
+            return new T();
+        }
+
+        float Clamp(float value, float min, float max, float fallback, string name)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value))
+            {
+                log.Warning("Warcry: {Field} was {Value}; reset to {Fallback}.", name, value, fallback);
+                repairs++;
+                return fallback;
+            }
+
+            if (value < min || value > max)
+            {
+                log.Warning("Warcry: {Field} was {Value}; clamped into {Min}-{Max}.", name, value, min, max);
+                repairs++;
+                return Math.Clamp(value, min, max);
+            }
+
+            return value;
+        }
+    }
 }
