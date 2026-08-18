@@ -59,6 +59,7 @@ The csproj **is** the plugin manifest (Name, Punchline, Description, Tags…). *
 ## Coding Standards
 
 - **File-scoped namespaces** — always. Root namespace `Warcry`, folder = namespace segment.
+- **Column alignment in `Plugin.cs` is deliberate** — the `[PluginService]` block and the UiBuilder `+=`/`-=` wiring are hand-aligned. It is the only thing `dotnet format` disputes in the whole solution; do not let a blanket format pass collapse it.
 - **Explicit usings**, ordered System → Dalamud/third-party → `Warcry.*`. No global usings.
 - **`sealed`** on concrete classes by default.
 - **C# 14 features** — pattern matching, collection expressions, records/readonly structs for value-shaped data (`CastEvent`, `CasterKey`, `VoiceRequest`).
