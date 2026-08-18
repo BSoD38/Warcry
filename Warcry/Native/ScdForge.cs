@@ -270,6 +270,9 @@ public sealed class ScdForge
             }
             catch
             {
+                // A candidate that cannot be read is simply not usable as a template;
+                // the next one may still work. Exhausting them all latches a visible
+                // failure Status below, so this swallow is not silent.
                 continue;
             }
 
