@@ -123,6 +123,19 @@ public sealed class ScdForge
         try
         {
             Directory.CreateDirectory(this.cacheDir);
+
+            // Orphaned temp files from writes interrupted by a crash or unload.
+            foreach (var stale in Directory.EnumerateFiles(this.cacheDir, "*.tmp"))
+            {
+                try
+                {
+                    File.Delete(stale);
+                }
+                catch (Exception ex)
+                {
+                    this.log.Warning(ex, "ScdForge: could not remove the stale temp file {File}", stale);
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -427,7 +440,7 @@ public sealed class ScdForge
                     return;
                 }
 
-                File.WriteAllBytes(localPath, scd);
+                WriteContentAddressed(localPath, scd);
 
                 this.completed.Enqueue(
                     new Encoded(variantKey, $"sound/vfx/warcry/clip/{name}.scd", localPath, seconds, scd.Length));
@@ -559,6 +572,62 @@ public sealed class ScdForge
 
         seconds = collected.Count / (float)rate;
         return [.. collected];
+    }
+
+    /// <summary>
+    /// Writes a content-addressed cache file: skip when it already exists, and land it
+    /// with a temp-then-move so the final name only ever holds complete bytes.
+    /// </summary>
+    /// <remarks>
+    /// The path is derived from the bytes, so "already exists with the right length"
+    /// means "already holds exactly this content" — overwriting would only risk an
+    /// IOException against a reader (a concurrent encode of a byte-identical variant,
+    /// or the game engine itself once the redirect has loaded). Both used to happen: a
+    /// plain WriteAllBytes here failed with "being used by another process" the moment
+    /// the pack builder ran two identical-content encodes at once.
+    /// </remarks>
+    private static void WriteContentAddressed(string localPath, byte[] scd)
+    {
+        var existing = new FileInfo(localPath);
+        if (existing.Exists && existing.Length == scd.Length)
+        {
+            return;
+        }
+
+        // Unique temp per attempt: two concurrent encodes of the same content must not
+        // collide on the temp name either.
+        var tmp = $"{localPath}.{Guid.NewGuid():N}.tmp";
+        File.WriteAllBytes(tmp, scd);
+
+        try
+        {
+            // overwrite:true only for the wrong-length case — a truncated leftover from
+            // a crash mid-write under the old scheme.
+            File.Move(tmp, localPath, overwrite: existing.Exists);
+        }
+        catch (IOException) when (File.Exists(localPath) && new FileInfo(localPath).Length == scd.Length)
+        {
+            // A concurrent encode of a byte-identical variant won the move. Same
+            // content is already in place, so this attempt has nothing left to do.
+            TryDelete(tmp);
+        }
+        catch
+        {
+            TryDelete(tmp);
+            throw;
+        }
+
+        static void TryDelete(string path)
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch
+            {
+                // A stray .tmp is swept on the next construction.
+            }
+        }
     }
 
     private static string ContentHash(byte[] bytes)

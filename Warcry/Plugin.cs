@@ -572,9 +572,20 @@ public sealed class Plugin : IDalamudPlugin
     /// builder parses the format back.</para>
     /// </remarks>
     public static string VariantKey(string hash, float rate, PitchMode mode, int fftSize)
-        => string.Create(
+    {
+        // The FFT size is a phase-vocoder parameter; varispeed never reads it. Left in
+        // the key, two rules differing only by FFT would be two "variants" encoding
+        // byte-identical files — wasted work, and a race onto the same content-addressed
+        // cache file when the pack builder runs both encodes concurrently.
+        if (mode == PitchMode.Varispeed)
+        {
+            fftSize = 0;
+        }
+
+        return string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
             $"{hash}:{rate:0.0000}:{(byte)mode}:{fftSize}");
+    }
 
     /// <summary>Fires a tone at your own position, through the full gain chain.</summary>
     public void PlayTestTone()
