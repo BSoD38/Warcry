@@ -19,8 +19,8 @@ namespace Warcry.Detection;
 /// ActionEffect1/8/16/24/32 packets. It fires once per action, identically for local and
 /// remote casters, so no deduplication is needed while it is the only trigger source.</para>
 /// <para>The detour must never allocate, lock, do I/O or await. The one exception is the
-/// caster-name capture, which is gated behind <c>captureNames</c> because M1's entire job
-/// is diagnostics. That gate flips off once the Events tab stops being the point.</para>
+/// caster-name capture, which is gated behind <see cref="CaptureNames"/> and exists only
+/// so the Events tab can show who cast what.</para>
 /// </remarks>
 public sealed unsafe class ActionWatcher : IDisposable
 {
@@ -43,7 +43,7 @@ public sealed unsafe class ActionWatcher : IDisposable
 
     public nint HookAddress { get; }
 
-    /// <summary>Capture caster names into diagnostics. Allocates in the detour; M1 only.</summary>
+    /// <summary>Capture caster names for the Events tab. Allocates in the detour.</summary>
     public bool CaptureNames { get; set; } = true;
 
     public ActionWatcher(
@@ -146,7 +146,6 @@ public sealed unsafe class ActionWatcher : IDisposable
                 casterEntityId: casterEntityId,
                 casterAddress: (nint)casterPtr,
                 actionId: header->ActionId,
-                spellId: header->SpellId,
                 animationVariation: header->AnimationVariation,
                 globalSequence: header->GlobalSequence,
                 sourceSequence: header->SourceSequence,

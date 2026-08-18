@@ -7,22 +7,6 @@ using Dalamud.Plugin.Services;
 
 namespace Warcry.Native;
 
-/// <summary>Result of asking Penumbra whether a redirect is really in force.</summary>
-public enum RedirectState
-{
-    /// <summary>Penumbra could not be asked at all.</summary>
-    Unavailable,
-
-    /// <summary>The default collection resolves the game path to our file.</summary>
-    Applied,
-
-    /// <summary>Penumbra echoed the game path back — no redirect is in force.</summary>
-    NotApplied,
-
-    /// <summary>Some other mod owns this path.</summary>
-    OtherTarget,
-}
-
 /// <summary>
 /// Registers runtime game-path redirects through Penumbra, so the game's resource system
 /// can load a file we authored.
@@ -42,12 +26,6 @@ public sealed class PenumbraBridge
     /// <summary>Redirects for forged voiceline clips. Owned by <see cref="ScdForge"/>.</summary>
     public const string ClipsTag = "Warcry.Clips";
 
-    /// <summary>Redirects the native spike registers while experimenting.</summary>
-    public const string SpikeTag = "Warcry.Spike";
-
-    /// <summary>Redirects the texture probe registers as a non-audio control.</summary>
-    public const string ProbeTag = "Warcry.Probe";
-
     /// <summary>
     /// How long a Penumbra-availability answer is reused before asking again.
     /// </summary>
@@ -64,9 +42,6 @@ public sealed class PenumbraBridge
     private const string AddAllLabel = "Penumbra.AddTemporaryModAll.V5";
     private const string RemoveAllLabel = "Penumbra.RemoveTemporaryModAll.V5";
 
-    // Unversioned, unlike the temporary-mod calls above. Func&lt;string, string&gt;.
-    private const string ResolveDefaultLabel = "Penumbra.ResolveDefaultPath";
-
     private readonly IDalamudPluginInterface pi;
     private readonly IPluginLog log;
 
@@ -75,11 +50,9 @@ public sealed class PenumbraBridge
     /// </summary>
     /// <remarks>
     /// Each caller owns its own tag. <c>AddTemporaryModAll</c> replaces a tag's entire set
-    /// atomically, so when the forge, the spike and the probe all shared one tag, running a
-    /// spike attempt silently dropped every forged clip redirect while the forge still
-    /// reported those clips as registered and warm — the engine was then asked for paths
-    /// Penumbra no longer served, and native audio went quiet for the rest of the session
-    /// with nothing anywhere saying why.
+    /// atomically, so two callers sharing one tag silently drop each other's redirects —
+    /// the engine is then asked for paths Penumbra no longer serves, and native audio goes
+    /// quiet with nothing anywhere saying why.
     /// </remarks>
     private readonly HashSet<string> registeredTags = [];
 
@@ -122,7 +95,7 @@ public sealed class PenumbraBridge
     /// <summary>
     /// Points one or more game paths at files on disk, under one caller's tag. Repeating
     /// the same tag replaces that tag's previous set atomically — and only that tag's, so
-    /// the forge, the spike and the probe cannot clobber each other's redirects.
+    /// callers cannot clobber each other's redirects.
     /// </summary>
     /// <returns>Penumbra's error code, 0 on success, or null if the call could not be made.</returns>
     public int? Redirect(string tag, Dictionary<string, string> gamePathToLocalPath)
@@ -164,82 +137,8 @@ public sealed class PenumbraBridge
         }
     }
 
-    /// <summary>
-    /// Asks Penumbra what the <em>default</em> collection resolves a game path to.
-    /// </summary>
-    /// <returns>
-    /// The resolved path — our local file if a redirect applies, otherwise the game path
-    /// echoed back — or null if the call could not be made.
-    /// </returns>
-    /// <remarks>
-    /// The default collection is the one that matters here. A sound played through
-    /// <c>SoundManager::PlaySound</c> carries no character context, so Penumbra has no
-    /// game object to resolve against; reports of SCD replacement working only from the
-    /// Base collection (Penumbra issue #275) are consistent with that. Character-assigned
-    /// collections are therefore the wrong thing to test against.
-    /// </remarks>
-    public string? ResolveDefault(string gamePath)
-    {
-        if (!this.PenumbraAvailable)
-        {
-            this.LastError = "Penumbra is not installed or not loaded";
-            return null;
-        }
-
-        try
-        {
-            return this.pi.GetIpcSubscriber<string, string>(ResolveDefaultLabel)
-                .InvokeFunc(Normalise(gamePath));
-        }
-        catch (Exception ex)
-        {
-            this.LastError = ex.Message;
-            this.log.Error(ex, "PenumbraBridge: {Label} failed", ResolveDefaultLabel);
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Whether a registered redirect is actually in force, established without playing
-    /// anything.
-    /// </summary>
-    /// <remarks>
-    /// This is the check the original spike never made. It separates "Penumbra is not
-    /// serving our file" from "the engine is not playing it" in one call, with no audio,
-    /// no listening and nothing to misattribute.
-    /// </remarks>
-    public RedirectState Verify(string gamePath, string expectedLocalPath, out string message)
-    {
-        var resolved = this.ResolveDefault(gamePath);
-
-        if (resolved is null)
-        {
-            message = $"could not ask Penumbra: {this.LastError}";
-            return RedirectState.Unavailable;
-        }
-
-        if (PathsMatch(resolved, expectedLocalPath))
-        {
-            message = $"APPLIED — the default collection resolves it to our file:\n    {resolved}";
-            return RedirectState.Applied;
-        }
-
-        if (PathsMatch(resolved, gamePath))
-        {
-            message = "NOT APPLIED — Penumbra echoed the game path back unchanged, so no\n" +
-                      "    redirect is in force for the default collection.";
-            return RedirectState.NotApplied;
-        }
-
-        message = $"REDIRECTED ELSEWHERE — something else claims this path:\n    {resolved}";
-        return RedirectState.OtherTarget;
-    }
-
     private static string Normalise(string path)
         => path.Replace('\\', '/').ToLowerInvariant();
-
-    private static bool PathsMatch(string a, string b)
-        => string.Equals(Normalise(a), Normalise(b), StringComparison.Ordinal);
 
     /// <summary>Drops one caller's redirect set, leaving every other tag in force.</summary>
     public void Clear(string tag)

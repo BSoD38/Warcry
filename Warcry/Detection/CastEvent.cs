@@ -25,15 +25,11 @@ public readonly struct CastEvent
     public readonly uint CasterEntityId;
     public readonly nint CasterAddress;
 
-    /// <summary>Header @0x08. BossMod builds its ActionID from this field.</summary>
-    public readonly uint ActionId;
-
     /// <summary>
-    /// Header @0x1C. DeathRecap looks up the Action sheet with THIS for normal actions;
-    /// DamageInfoPlugin calls it AnimationId. Carried alongside ActionId until the
-    /// Diagnostics tab settles which one is the right mapping key. See docs/PLAN.md 5.1.
+    /// Header @0x08. Settled in game as the mapping key: it consistently names the
+    /// action actually pressed, where SpellId (@0x1C) named the animation.
     /// </summary>
-    public readonly ushort SpellId;
+    public readonly uint ActionId;
 
     public readonly byte AnimationVariation;
     public readonly uint GlobalSequence;
@@ -65,7 +61,7 @@ public readonly struct CastEvent
     public float CastRemaining => this.WasCasting ? System.MathF.Max(0f, this.CastTotal - this.CastCurrent) : 0f;
 
     public CastEvent(
-        uint casterEntityId, nint casterAddress, uint actionId, ushort spellId,
+        uint casterEntityId, nint casterAddress, uint actionId,
         byte animationVariation, uint globalSequence, ushort sourceSequence,
         byte rawActionType, byte numTargets, Vector3 position, byte soundCategory,
         CasterKey caster, bool isLocalPlayer, TriggerPhase phase,
@@ -77,7 +73,6 @@ public readonly struct CastEvent
         this.CasterEntityId = casterEntityId;
         this.CasterAddress = casterAddress;
         this.ActionId = actionId;
-        this.SpellId = spellId;
         this.AnimationVariation = animationVariation;
         this.GlobalSequence = globalSequence;
         this.SourceSequence = sourceSequence;

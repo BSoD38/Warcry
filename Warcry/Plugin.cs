@@ -33,7 +33,6 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDataManager           Data        { get; private set; } = null!;
     [PluginService] internal static IGameConfig            GameConfig  { get; private set; } = null!;
     [PluginService] internal static ICommandManager        Commands    { get; private set; } = null!;
-    [PluginService] internal static ITextureProvider       Textures    { get; private set; } = null!;
     [PluginService] internal static IDragDropManager       DragDrop    { get; private set; } = null!;
 
     public Configuration Config { get; }
@@ -72,36 +71,10 @@ public sealed class Plugin : IDalamudPlugin
 
     public PlaybackScheduler Scheduler { get; }
 
-    /// <summary>Native-audio spike, day 1. Read-only observer, disabled by default.</summary>
-    public SoundManagerWatcher SoundWatcher { get; }
-
     public PenumbraBridge Penumbra { get; }
 
-    public NativeSpike Spike { get; }
-
-    /// <summary>Visual check that our Penumbra integration has any effect at all.</summary>
-    public PenumbraProbe Probe { get; }
-
-    /// <summary>
-    /// Stopwatch timestamp of the local player's last ActionEffect. Used to measure how
-    /// long after snapshot the game plays its own battle grunt.
-    /// </summary>
-    public long LastLocalCastTicks { get; private set; }
-
-    /// <summary>Action id of that last local cast, so grunt delays can be attributed per action.</summary>
+    /// <summary>Action id of the last local cast, so "Use last action" can fill the editor.</summary>
     public uint LastLocalCastActionId { get; private set; }
-
-    /// <summary>
-    /// The local player's world position, refreshed once per frame.
-    /// </summary>
-    /// <remarks>
-    /// <c>SoundManagerWatcher</c> needs this from inside the <c>PlaySound</c> detour, to
-    /// compare against the emitter position the game passes — the check that establishes
-    /// whether the engine wants world or listener-relative coordinates. The object table
-    /// must not be touched off the main thread, so the value is cached here instead. A torn
-    /// read is possible and harmless: this is diagnostic, not gameplay.
-    /// </remarks>
-    public System.Numerics.Vector3 CachedPlayerPosition { get; private set; }
 
     /// <summary>
     /// Every action id seen firing from the local player. The Action sheet is full of
@@ -145,8 +118,6 @@ public sealed class Plugin : IDalamudPlugin
         this.Throttle = new Throttle(this.Config);
 
         this.Penumbra = new PenumbraBridge(PluginInterface, Log);
-        this.Spike = new NativeSpike(Data, Log, this.Penumbra, PluginInterface.GetPluginConfigDirectory());
-        this.Probe = new PenumbraProbe(Data, Textures, this.Penumbra, Log, PluginInterface.GetPluginConfigDirectory());
 
         foreach (var id in this.Config.ObservedActionIds)
         {
@@ -171,11 +142,6 @@ public sealed class Plugin : IDalamudPlugin
 
         // Installs the hook. Failure is logged and left inert — never thrown.
         this.Watcher = new ActionWatcher(Interop, Log, this.VoiceSlots, () => PlayerState.EntityId, this.OnCast);
-        this.SoundWatcher = new SoundManagerWatcher(
-            Interop,
-            Log,
-            () => (this.LastLocalCastTicks, this.LastLocalCastActionId),
-            () => this.CachedPlayerPosition);
 
         this.mainWindow = new MainWindow(this);
         this.windows.AddWindow(this.mainWindow);
@@ -200,8 +166,8 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     /// <summary>
-    /// Called on the game main thread from inside the ActionEffect detour.
-    /// The audience filter, resolver and throttle land in M4-M6; M3 plays a test tone.
+    /// Called on the game main thread from inside the ActionEffect detour: gates,
+    /// throttles, resolves a clip and schedules it.
     /// </summary>
     private void OnCast(in CastEvent ev, DropStage drop, string casterName)
     {
@@ -214,8 +180,6 @@ public sealed class Plugin : IDalamudPlugin
 
         if (ev.IsLocalPlayer && drop == DropStage.None)
         {
-            // Reference point for measuring the game's own battle grunt latency.
-            this.LastLocalCastTicks = System.Diagnostics.Stopwatch.GetTimestamp();
             this.LastLocalCastActionId = ev.ActionId;
 
             if (ev.ActionId != 0 && this.ObservedActions.Add(ev.ActionId))
@@ -273,7 +237,7 @@ public sealed class Plugin : IDalamudPlugin
             var mode = r.Rule.PitchMode;
             var fft = r.Rule.PitchFftSize;
 
-            if (mode == PitchMode.Varispeed && this.Config.NativePitchViaSpeed)
+            if (mode == PitchMode.Varispeed)
             {
                 // One stable base variant per clip; the per-cast pitch roll rides on the
                 // request's Speed — the engine's own speed argument natively, baked at
@@ -339,12 +303,9 @@ public sealed class Plugin : IDalamudPlugin
     {
         this.elapsed += framework.UpdateDelta.TotalSeconds;
 
-        // One object-table read per frame serves everyone: position for the watcher's
-        // distance check, job for the pack builder's warm scoping. Never read from the
-        // detour; never read twice.
-        var lp = Objects.LocalPlayer;
-        this.CachedPlayerPosition = lp?.Position ?? System.Numerics.Vector3.Zero;
-        this.CachedJobId = lp?.ClassJob.RowId ?? 0u;
+        // One object-table read per frame, for the pack builder's warm scoping. Never
+        // read from the detour; never read twice.
+        this.CachedJobId = Objects.LocalPlayer?.ClassJob.RowId ?? 0u;
 
         this.Volume.Update(this.elapsed);
         this.Scheduler.Update();
@@ -354,7 +315,6 @@ public sealed class Plugin : IDalamudPlugin
         this.Packs.Update(this.CachedJobId);
 
         this.Sink.Update();
-        this.Spike.Update();
 
         if (this.observedDirty && this.elapsed >= this.nextObservedFlush)
         {
@@ -396,52 +356,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        if (trimmed.StartsWith("dumpscd ", StringComparison.OrdinalIgnoreCase))
-        {
-            this.DumpGameFile(trimmed[8..].Trim());
-            return;
-        }
-
-        if (trimmed.StartsWith("scdinfo", StringComparison.OrdinalIgnoreCase))
-        {
-            // Blank argument inspects the default template.
-            this.Spike.Inspect(trimmed.Length > 7 ? trimmed[7..].Trim() : null);
-            this.mainWindow.IsOpen = true;
-            return;
-        }
-
         this.ToggleMainUi();
-    }
-
-    /// <summary>
-    /// Extracts a real game file to the config directory so its byte layout can be
-    /// studied. The .scd writer is built against a genuine battle-voice file as a
-    /// structural template rather than against notes about the format.
-    /// </summary>
-    public void DumpGameFile(string gamePath)
-    {
-        try
-        {
-            var file = Data.GetFile(gamePath);
-            if (file is null)
-            {
-                Log.Warning("dumpscd: no such game file: {Path}", gamePath);
-                return;
-            }
-
-            var dir = System.IO.Path.Combine(PluginInterface.GetPluginConfigDirectory(), "dump");
-            System.IO.Directory.CreateDirectory(dir);
-
-            var name = gamePath.Replace('/', '_').Replace('\\', '_');
-            var dest = System.IO.Path.Combine(dir, name);
-            System.IO.File.WriteAllBytes(dest, file.Data);
-
-            Log.Information("dumpscd: wrote {Bytes} bytes to {Dest}", file.Data.Length, dest);
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "dumpscd failed for {Path}", gamePath);
-        }
     }
 
     /// <summary>
@@ -449,10 +364,9 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     /// <remarks>
     /// <para>"I don't hear the sounds I mapped" has about eight distinct causes, most of
-    /// them switches the user set themselves — including the spike tab's own "silence the
-    /// plugin" button. Working through them by hand means knowing which of eight places to
-    /// look, so this checks them in the order the pipeline does and names the first one
-    /// that would stop a line.</para>
+    /// them switches the user set themselves. Working through them by hand means knowing
+    /// which of eight places to look, so this checks them in the order the pipeline does
+    /// and names the first one that would stop a line.</para>
     /// <para>Ordered deliberately: the checks a user can fix come before the ones they
     /// cannot.</para>
     /// </remarks>
@@ -466,8 +380,7 @@ public sealed class Plugin : IDalamudPlugin
         if (!this.Config.PlayTestToneOnActions)
         {
             return "\"Play clips on my actions\" is off, on the Settings tab. Actions are still " +
-                   "detected — the Events tab keeps filling — but nothing is played. The spike " +
-                   "tab's \"silence the plugin for this test\" button turns this off.";
+                   "detected — the Events tab keeps filling — but nothing is played.";
         }
 
         if (!this.Watcher.Installed)
@@ -685,16 +598,11 @@ public sealed class Plugin : IDalamudPlugin
     {
         // Order matters: stop producing events before tearing down consumers.
         this.Watcher.Dispose();
-        this.SoundWatcher.Dispose();
 
         Framework.Update -= this.OnFrameworkUpdate;
         ClientState.TerritoryChanged -= this.OnTerritoryChanged;
 
         this.Scheduler.CancelAll();
-
-        // Before the sink: the spike may hold a retained SoundData*, and releasing it
-        // needs the engine still reachable — while the sink's teardown drops redirects.
-        this.Spike.Dispose();
 
         this.Sink.Dispose();
         this.Clips.Dispose();

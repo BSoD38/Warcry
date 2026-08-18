@@ -208,8 +208,8 @@ public static class MsAdPcm
     /// <remarks>
     /// ⚠ Authored from the documented Microsoft layout rather than copied from a game file.
     /// The prediction to check is that real MS-ADPCM entries report <c>SubInfoSize = 0x32</c>
-    /// (50). If they do not, dump one and copy it instead — templating has been the only
-    /// technique that has worked in this spike.
+    /// (50). If they do not, dump one and copy it instead — templating from a real file has
+    /// been the only reliable technique with this format.
     /// </remarks>
     public static byte[] BuildCodecHeader(int channels, int sampleRate, int blockAlign)
     {

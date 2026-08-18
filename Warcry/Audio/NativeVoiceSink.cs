@@ -26,8 +26,8 @@ namespace Warcry.Audio;
 /// managed sink for exactly one line rather than dropping it.</para>
 /// <para>Verified end to end in <c>docs/native-spike.md</c>, including PLAN.md §6
 /// (b)–(e) — volume sliders, positional attenuation, sustained load — and the speed
-/// argument, all passed in game on 2026-08-18 via the Sound pack checklist. Re-run the
-/// checklist after a game patch or FFXIVClientStructs bump.</para>
+/// argument, all passed in game on 2026-08-18. Re-verify after a game patch or
+/// FFXIVClientStructs bump.</para>
 /// </remarks>
 public sealed unsafe class NativeVoiceSink : IVoiceSink
 {

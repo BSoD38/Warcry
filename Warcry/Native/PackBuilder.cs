@@ -372,7 +372,7 @@ public sealed class PackBuilder
 
                 foreach (var clipRef in rule.Clips)
                 {
-                    foreach (var rate in BakedRatesFor(rule, this.config.NativePitchViaSpeed))
+                    foreach (var rate in BakedRatesFor(rule))
                     {
                         var key = Plugin.VariantKey(clipRef.Hash, rate, rule.PitchMode, rule.PitchFftSize);
                         if (this.plan.ContainsKey(key))
@@ -431,9 +431,9 @@ public sealed class PackBuilder
     /// The baked playback rates a rule can request — the plan-side mirror of the pitch
     /// logic in <c>Plugin.OnCast</c> and <c>ClipResolver.RollRate</c>.
     /// </summary>
-    private static IEnumerable<float> BakedRatesFor(VoiceRule rule, bool pitchViaSpeed)
+    private static IEnumerable<float> BakedRatesFor(VoiceRule rule)
     {
-        if (rule.PitchMode == PitchMode.Varispeed && pitchViaSpeed)
+        if (rule.PitchMode == PitchMode.Varispeed)
         {
             // The whole roll rides on the engine's speed argument; one base variant.
             yield return 1f;
@@ -500,5 +500,5 @@ public sealed class PackBuilder
     }
 
     private string Fingerprint()
-        => $"{this.profiles.Revision}:{this.clips.Count}:{this.config.NativePitchViaSpeed}:{this.config.FallBackToTestTone}";
+        => $"{this.profiles.Revision}:{this.clips.Count}:{this.config.FallBackToTestTone}";
 }

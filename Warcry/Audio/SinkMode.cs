@@ -19,7 +19,7 @@ public enum SinkMode : byte
     /// </summary>
     NativeOnly = 1,
 
-    /// <summary>NAudio only. The pre-spike behaviour, and the fallback of last resort.</summary>
+    /// <summary>NAudio only. No Penumbra needed; the fallback of last resort.</summary>
     ManagedOnly = 2,
 
     /// <summary>No gameplay playback at all. Auditioning from the editor still works.</summary>
