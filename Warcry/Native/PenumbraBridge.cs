@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
@@ -38,7 +39,26 @@ public enum RedirectState
 /// </remarks>
 public sealed class PenumbraBridge
 {
-    private const string Tag = "Warcry";
+    /// <summary>Redirects for forged voiceline clips. Owned by <see cref="ScdForge"/>.</summary>
+    public const string ClipsTag = "Warcry.Clips";
+
+    /// <summary>Redirects the native spike registers while experimenting.</summary>
+    public const string SpikeTag = "Warcry.Spike";
+
+    /// <summary>Redirects the texture probe registers as a non-audio control.</summary>
+    public const string ProbeTag = "Warcry.Probe";
+
+    /// <summary>
+    /// How long a Penumbra-availability answer is reused before asking again.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="PenumbraAvailable"/> is reached from <c>NativeVoiceSink.Available</c>,
+    /// which the router evaluates on every request — i.e. from inside the action detour —
+    /// and once per frame from the Settings tab. A LINQ scan over the installed-plugin list
+    /// has no business running there. Penumbra loading or unloading is a once-a-session
+    /// event, so a two-second-stale answer is always good enough.
+    /// </remarks>
+    private const double AvailabilityCacheSeconds = 2.0;
 
     // Note the V6/V5 inconsistency across Penumbra's IPC surface — it is real.
     private const string AddAllLabel = "Penumbra.AddTemporaryModAll.V5";
@@ -50,7 +70,21 @@ public sealed class PenumbraBridge
     private readonly IDalamudPluginInterface pi;
     private readonly IPluginLog log;
 
-    private bool registered;
+    /// <summary>
+    /// Tags we have registered at least one redirect under, so teardown clears all of them.
+    /// </summary>
+    /// <remarks>
+    /// Each caller owns its own tag. <c>AddTemporaryModAll</c> replaces a tag's entire set
+    /// atomically, so when the forge, the spike and the probe all shared one tag, running a
+    /// spike attempt silently dropped every forged clip redirect while the forge still
+    /// reported those clips as registered and warm — the engine was then asked for paths
+    /// Penumbra no longer served, and native audio went quiet for the rest of the session
+    /// with nothing anywhere saying why.
+    /// </remarks>
+    private readonly HashSet<string> registeredTags = [];
+
+    private bool availabilityCache;
+    private long availabilityCheckedAt;
 
     public PenumbraBridge(IDalamudPluginInterface pluginInterface, IPluginLog log)
     {
@@ -58,19 +92,40 @@ public sealed class PenumbraBridge
         this.log = log;
     }
 
-    /// <summary>Is Penumbra installed and loaded right now?</summary>
-    public bool PenumbraAvailable =>
-        this.pi.InstalledPlugins.Any(p =>
-            string.Equals(p.InternalName, "Penumbra", StringComparison.OrdinalIgnoreCase) && p.IsLoaded);
+    /// <summary>
+    /// Is Penumbra installed and loaded? Answers from a short-lived cache.
+    /// </summary>
+    /// <remarks>
+    /// The scan over <c>InstalledPlugins</c> is deferred to at most once per
+    /// <see cref="AvailabilityCacheSeconds"/> because this property is on the cast path.
+    /// </remarks>
+    public bool PenumbraAvailable
+    {
+        get
+        {
+            var now = Stopwatch.GetTimestamp();
+            if (this.availabilityCheckedAt != 0 &&
+                now - this.availabilityCheckedAt < (long)(AvailabilityCacheSeconds * Stopwatch.Frequency))
+            {
+                return this.availabilityCache;
+            }
+
+            this.availabilityCheckedAt = now;
+            this.availabilityCache = this.pi.InstalledPlugins.Any(p =>
+                string.Equals(p.InternalName, "Penumbra", StringComparison.OrdinalIgnoreCase) && p.IsLoaded);
+            return this.availabilityCache;
+        }
+    }
 
     public string LastError { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Points one or more game paths at files on disk. Repeating the same tag replaces
-    /// the previous set atomically.
+    /// Points one or more game paths at files on disk, under one caller's tag. Repeating
+    /// the same tag replaces that tag's previous set atomically — and only that tag's, so
+    /// the forge, the spike and the probe cannot clobber each other's redirects.
     /// </summary>
     /// <returns>Penumbra's error code, 0 on success, or null if the call could not be made.</returns>
-    public int? Redirect(Dictionary<string, string> gamePathToLocalPath)
+    public int? Redirect(string tag, Dictionary<string, string> gamePathToLocalPath)
     {
         if (!this.PenumbraAvailable)
         {
@@ -91,12 +146,13 @@ public sealed class PenumbraBridge
             }
 
             var subscriber = this.pi.GetIpcSubscriber<string, Dictionary<string, string>, string, int, int>(AddAllLabel);
-            var result = subscriber.InvokeFunc(Tag, normalised, string.Empty, 0);
-            this.registered = true;
+            var result = subscriber.InvokeFunc(tag, normalised, string.Empty, 0);
+            this.registeredTags.Add(tag);
             this.LastError = result == 0 ? string.Empty : $"Penumbra returned {result}";
             this.log.Information(
-                "PenumbraBridge: registered {Count} redirect(s), result {Result}",
+                "PenumbraBridge: registered {Count} redirect(s) under {Tag}, result {Result}",
                 gamePathToLocalPath.Count,
+                tag,
                 result);
             return result;
         }
@@ -185,9 +241,10 @@ public sealed class PenumbraBridge
     private static bool PathsMatch(string a, string b)
         => string.Equals(Normalise(a), Normalise(b), StringComparison.Ordinal);
 
-    public void Clear()
+    /// <summary>Drops one caller's redirect set, leaving every other tag in force.</summary>
+    public void Clear(string tag)
     {
-        if (!this.registered || !this.PenumbraAvailable)
+        if (!this.registeredTags.Contains(tag) || !this.PenumbraAvailable)
         {
             return;
         }
@@ -196,15 +253,24 @@ public sealed class PenumbraBridge
         {
             // Signature per Penumbra.Api: (tag, priority).
             var subscriber = this.pi.GetIpcSubscriber<string, int, int>(RemoveAllLabel);
-            subscriber.InvokeFunc(Tag, 0);
-            this.registered = false;
-            this.log.Information("PenumbraBridge: cleared redirects");
+            subscriber.InvokeFunc(tag, 0);
+            this.registeredTags.Remove(tag);
+            this.log.Information("PenumbraBridge: cleared redirects under {Tag}", tag);
         }
         catch (Exception ex)
         {
             // Never throw from teardown — a leaked temporary mod is annoying, a crash on
             // unload is much worse.
             this.log.Warning(ex, "PenumbraBridge: {Label} failed during teardown", RemoveAllLabel);
+        }
+    }
+
+    /// <summary>Drops every redirect this plugin registered, whatever the tag. Unload only.</summary>
+    public void ClearAll()
+    {
+        foreach (var tag in new List<string>(this.registeredTags))
+        {
+            this.Clear(tag);
         }
     }
 }

@@ -61,6 +61,27 @@ public sealed class CachedClip
     /// <summary>Semitones to a playback rate. 12 semitones = one octave = 2x.</summary>
     public static float SemitonesToRate(float semitones) => MathF.Pow(2f, semitones / 12f);
 
+    /// <summary>
+    /// Snaps a playback rate to the nearest half-semitone step.
+    /// </summary>
+    /// <remarks>
+    /// Exists for pitch that must be baked into an encoded variant: a continuous random
+    /// rate would mint a new variant on every roll and make the variant set unbounded,
+    /// while half-semitone steps cap a ±12 st spread at 49 renderings and are below the
+    /// just-noticeable difference for this material.
+    /// </remarks>
+    public static float QuantiseRate(float rate, float stepSemitones = 0.5f)
+    {
+        if (rate <= 0f || stepSemitones <= 0f)
+        {
+            return 1f;
+        }
+
+        var semitones = 12f * MathF.Log2(rate);
+        var snapped = MathF.Round(semitones / stepSemitones) * stepSemitones;
+        return Math.Abs(snapped) < 0.001f ? 1f : SemitonesToRate(snapped);
+    }
+
     private sealed class Reader : ISampleProvider
     {
         private readonly float[] samples;

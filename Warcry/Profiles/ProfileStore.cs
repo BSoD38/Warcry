@@ -44,6 +44,12 @@ public sealed class ProfileStore
 
     public IReadOnlyList<VoiceProfile> Sorted => this.sorted;
 
+    /// <summary>
+    /// Bumped on every successful save. The pack builder watches it to know when the
+    /// mapping set changed without holding a reference into the document.
+    /// </summary>
+    public int Revision { get; private set; }
+
     public void Load()
     {
         try
@@ -79,11 +85,16 @@ public sealed class ProfileStore
     {
         try
         {
+            // Sort BEFORE serialising, so the file on disk records the order the resolver
+            // will actually use — a document saved pre-sort and reloaded later would
+            // present rules in a different order than the session that wrote it ran with.
+            this.Resort();
+
             var json = JsonSerializer.Serialize(this.document, JsonOptions);
             var tmp = this.path + ".tmp";
             File.WriteAllText(tmp, json);
             File.Move(tmp, this.path, overwrite: true);
-            this.Resort();
+            this.Revision++;
         }
         catch (Exception ex)
         {
@@ -106,7 +117,14 @@ public sealed class ProfileStore
 
         foreach (var profile in this.document.Profiles)
         {
-            profile.Rules.Sort((a, b) => b.When.Specificity.CompareTo(a.When.Specificity));
+            // OrderByDescending, not List.Sort: List.Sort is an unstable introsort, and
+            // most rules tie on specificity (each names one action). An unstable sort
+            // permutes the ties on every save, and the resolver takes the FIRST matching
+            // rule — so which clip wins could change because of an unrelated edit. A
+            // stable sort keeps insertion order within a tie, forever.
+            var ordered = profile.Rules.OrderByDescending(r => r.When.Specificity).ToList();
+            profile.Rules.Clear();
+            profile.Rules.AddRange(ordered);
         }
     }
 

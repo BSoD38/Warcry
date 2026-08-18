@@ -43,24 +43,29 @@ public sealed class ClipResolver
             return cached;
         }
 
-        var key = new ActionKey(actionId, string.Empty, 0, 0, 0f);
         var sheet = this.data.GetExcelSheet<GameAction>();
-        if (sheet.TryGetRow(actionId, out var row))
+        if (!sheet.TryGetRow(actionId, out var row))
         {
-            // English deliberately: the name is an identity here, not a label. Memoised,
-            // so the sheet lookup happens once per action id, never per cast.
-            var english = this.data.GetExcelSheet<GameAction>(Dalamud.Game.ClientLanguage.English);
-            var name = english.TryGetRow(actionId, out var enRow)
-                ? enRow.Name.ExtractText()
-                : row.Name.ExtractText();
-
-            key = new ActionKey(
-                actionId,
-                name,
-                (ushort)row.ActionCategory.RowId,
-                row.ClassJob.RowId,
-                row.Cast100ms / 10f);
+            // NOT memoised. A miss can be transient — a lookup before the data manager is
+            // warm, say — and caching the empty placeholder would poison this action id
+            // for the whole session: no category/job/cast rule would ever match it, the
+            // auto-attack skip would misread category 0, and casts-only would drop it.
+            return new ActionKey(actionId, string.Empty, 0, 0, 0f);
         }
+
+        // English deliberately: the name is an identity here, not a label. Memoised,
+        // so the sheet lookup happens once per action id, never per cast.
+        var english = this.data.GetExcelSheet<GameAction>(Dalamud.Game.ClientLanguage.English);
+        var name = english.TryGetRow(actionId, out var enRow)
+            ? enRow.Name.ExtractText()
+            : row.Name.ExtractText();
+
+        var key = new ActionKey(
+            actionId,
+            name,
+            (ushort)row.ActionCategory.RowId,
+            row.ClassJob.RowId,
+            row.Cast100ms / 10f);
 
         this.actionCache[actionId] = key;
         return key;
@@ -121,6 +126,27 @@ public sealed class ClipResolver
     }
 
     /// <summary>
+    /// Advances the shared xorshift64* state. One generator, two scalings below — the
+    /// advance-and-multiply lives here so a future change cannot be made in one call
+    /// site and missed in the other.
+    /// </summary>
+    /// <remarks>xorshift64* rather than <c>Random.Shared</c>: no contention on the game
+    /// thread, no allocation, and deterministic given the seed.</remarks>
+    private ulong NextRaw()
+    {
+        this.rng ^= this.rng >> 12;
+        this.rng ^= this.rng << 25;
+        this.rng ^= this.rng >> 27;
+        return this.rng * 0x2545F4914F6CDD1DUL;
+    }
+
+    /// <summary>Uniform in [0, 1).</summary>
+    private float NextUnit() => (this.NextRaw() >> 11) / (float)(1UL << 53);
+
+    /// <summary>Uniform integer in [0, exclusiveMax).</summary>
+    private int NextBelow(int exclusiveMax) => (int)(this.NextRaw() % (ulong)exclusiveMax);
+
+    /// <summary>
     /// Base pitch plus a fresh uniform roll in the random spread, as a playback rate.
     /// </summary>
     private float RollRate(VoiceRule rule)
@@ -129,12 +155,7 @@ public sealed class ClipResolver
 
         if (rule.PitchRandomSemitones > 0.001f)
         {
-            // xorshift64* -> [-1, 1]
-            this.rng ^= this.rng >> 12;
-            this.rng ^= this.rng << 25;
-            this.rng ^= this.rng >> 27;
-            var unit = ((this.rng * 0x2545F4914F6CDD1DUL) >> 11) / (float)(1UL << 53);
-            semitones += ((unit * 2f) - 1f) * rule.PitchRandomSemitones;
+            semitones += ((this.NextUnit() * 2f) - 1f) * rule.PitchRandomSemitones;
         }
 
         return Math.Abs(semitones) < 0.001f ? 1f : Warcry.Clips.CachedClip.SemitonesToRate(semitones);
@@ -153,6 +174,10 @@ public sealed class ClipResolver
 
         if (rule.Clips.Count == 1)
         {
+            // Recorded even though there is nothing to avoid yet: the moment a second
+            // clip is added to the rule, "don't repeat what just played" must already
+            // know what just played.
+            this.lastClip[(caster, rule.Id)] = rule.Clips[0].Hash;
             return rule.Clips[0];
         }
 
@@ -169,14 +194,12 @@ public sealed class ClipResolver
 
         if (total <= 0)
         {
+            // Every clip in the rule shares the previous pick's hash (duplicated entries).
+            this.lastClip[(caster, rule.Id)] = rule.Clips[0].Hash;
             return rule.Clips[0];
         }
 
-        // xorshift64* — no Random.Shared contention on the game thread.
-        this.rng ^= this.rng >> 12;
-        this.rng ^= this.rng << 25;
-        this.rng ^= this.rng >> 27;
-        var roll = (int)((this.rng * 0x2545F4914F6CDD1DUL) % (ulong)total);
+        var roll = this.NextBelow(total);
 
         foreach (var c in rule.Clips)
         {
@@ -193,6 +216,9 @@ public sealed class ClipResolver
             }
         }
 
+        // Unreachable while the roll is bounded by the summed weights, but if it is ever
+        // reached the fallback still has to count as the previous pick.
+        this.lastClip[(caster, rule.Id)] = rule.Clips[0].Hash;
         return rule.Clips[0];
     }
 

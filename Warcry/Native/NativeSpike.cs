@@ -157,7 +157,7 @@ public enum PathSource
 /// attenuated to nothing by distance, which removes the most likely cause of the original
 /// all-modes silence from the very first test.</para>
 /// </remarks>
-public sealed unsafe class NativeSpike
+public sealed unsafe class NativeSpike : IDisposable
 {
     private const uint SampleRate = 44100;
 
@@ -213,20 +213,31 @@ public sealed unsafe class NativeSpike
         this.log = log;
         this.penumbra = penumbra;
         this.cacheDir = Path.Combine(configDirectory, ".cache", "scd");
-        Directory.CreateDirectory(this.cacheDir);
 
-        // Legacy attempt-numbered files. Their names are the bug described on
-        // SyntheticPathFor, so remove them rather than leave them to confuse a future dump.
-        foreach (var legacy in Directory.EnumerateFiles(this.cacheDir, "spike_*.scd"))
+        // Guarded because this runs inside the Plugin constructor: a read-only config
+        // directory or an antivirus hold must degrade the spike tab, not fail the whole
+        // plugin load. ScdForge treats the identical call the same way.
+        try
         {
-            try
+            Directory.CreateDirectory(this.cacheDir);
+
+            // Legacy attempt-numbered files. Their names are the bug described on
+            // SyntheticPathFor, so remove them rather than leave them to confuse a future dump.
+            foreach (var legacy in Directory.EnumerateFiles(this.cacheDir, "spike_*.scd"))
             {
-                File.Delete(legacy);
+                try
+                {
+                    File.Delete(legacy);
+                }
+                catch (Exception ex)
+                {
+                    this.log.Warning(ex, "NativeSpike: could not remove the legacy cache file {File}", legacy);
+                }
             }
-            catch (Exception ex)
-            {
-                this.log.Warning(ex, "NativeSpike: could not remove the legacy cache file {File}", legacy);
-            }
+        }
+        catch (Exception ex)
+        {
+            this.log.Error(ex, "NativeSpike: could not prepare the cache directory");
         }
     }
 
@@ -678,7 +689,7 @@ public sealed unsafe class NativeSpike
             return false;
         }
 
-        var code = this.penumbra.Redirect(new Dictionary<string, string> { [gamePath] = localPath });
+        var code = this.penumbra.Redirect(PenumbraBridge.SpikeTag, new Dictionary<string, string> { [gamePath] = localPath });
         if (code is null)
         {
             this.Say($"FAIL 4/5 — redirect failed: {this.penumbra.LastError}");
@@ -743,7 +754,7 @@ public sealed unsafe class NativeSpike
             return;
         }
 
-        var code = this.penumbra.Redirect(new Dictionary<string, string> { [gamePath] = localPath });
+        var code = this.penumbra.Redirect(PenumbraBridge.SpikeTag, new Dictionary<string, string> { [gamePath] = localPath });
         this.Say($"registered {gamePath} (code {code}). No play call was made.");
 
         var state = this.penumbra.Verify(gamePath, localPath, out var message);
@@ -1349,6 +1360,13 @@ public sealed unsafe class NativeSpike
             this.trackedIsOurs = false;
         }
     }
+
+    /// <summary>
+    /// Releases a still-tracked <c>SoundData</c> on unload. Without this, unloading the
+    /// plugin while an attempt is being polled leaks a slot from the engine's 256-entry
+    /// pool until the game exits — and leaves a dangling pointer in a dead object.
+    /// </summary>
+    public void Dispose() => this.ReleaseTracked();
 
     // ------------------------------------------------------------------ helpers
 

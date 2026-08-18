@@ -54,7 +54,17 @@ public sealed class PenumbraProbe
         this.penumbra = penumbra;
         this.log = log;
         this.cacheDir = Path.Combine(configDirectory, ".cache", "tex");
-        Directory.CreateDirectory(this.cacheDir);
+
+        // Guarded because this runs inside the Plugin constructor: an I/O failure must
+        // degrade the probe, not fail the whole plugin load.
+        try
+        {
+            Directory.CreateDirectory(this.cacheDir);
+        }
+        catch (Exception ex)
+        {
+            this.log.Error(ex, "PenumbraProbe: could not create the cache directory");
+        }
     }
 
     public List<string> Report { get; } = [];
@@ -128,7 +138,7 @@ public sealed class PenumbraProbe
         this.Say($"replacing icon {target}  ({targetPath})");
         this.Say($"        with icon {ReferenceIcon}  ({sourceBytes.Length} bytes)");
 
-        var code = this.penumbra.Redirect(new Dictionary<string, string> { [targetPath] = localPath });
+        var code = this.penumbra.Redirect(PenumbraBridge.ProbeTag, new Dictionary<string, string> { [targetPath] = localPath });
         if (code is null)
         {
             this.Say($"FAIL — redirect call failed: {this.penumbra.LastError}");

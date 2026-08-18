@@ -38,12 +38,27 @@ public sealed class PlaybackScheduler
 
     private readonly List<Pending> pending = [];
     private readonly IVoiceSink sink;
+    private readonly Action? onRefused;
 
-    public PlaybackScheduler(IVoiceSink sink) => this.sink = sink;
+    /// <param name="onRefused">
+    /// Called when a <em>delayed</em> dispatch is refused by the sink. Immediate refusals
+    /// are visible to the caller through <see cref="Schedule"/>'s return value; delayed
+    /// ones happen frames later with nobody watching, and used to vanish — the Events row
+    /// read "ok" for a line that never sounded.
+    /// </param>
+    public PlaybackScheduler(IVoiceSink sink, Action? onRefused = null)
+    {
+        this.sink = sink;
+        this.onRefused = onRefused;
+    }
 
     public int PendingCount => this.pending.Count;
 
+    /// <summary>Requests actually accepted by a sink.</summary>
     public long Dispatched { get; private set; }
+
+    /// <summary>Requests every sink refused at dispatch time.</summary>
+    public long Refused { get; private set; }
 
     public long Cancelled { get; private set; }
 
@@ -55,8 +70,14 @@ public sealed class PlaybackScheduler
     {
         if (delaySeconds <= 0f)
         {
-            this.Dispatched++;
-            return this.sink.TryPlay(in request);
+            if (this.sink.TryPlay(in request))
+            {
+                this.Dispatched++;
+                return true;
+            }
+
+            this.Refused++;
+            return false;
         }
 
         if (delaySeconds > MaxDelaySeconds)
@@ -88,8 +109,16 @@ public sealed class PlaybackScheduler
             }
 
             this.pending.RemoveAt(i);
-            this.Dispatched++;
-            this.sink.TryPlay(in item.Request);
+
+            if (this.sink.TryPlay(in item.Request))
+            {
+                this.Dispatched++;
+            }
+            else
+            {
+                this.Refused++;
+                this.onRefused?.Invoke();
+            }
         }
     }
 

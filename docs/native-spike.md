@@ -7,6 +7,34 @@
 
 ---
 
+## Rework to native-only (2026-08-18) — what the next in-game session must measure
+
+The sound system was rebuilt on top of the GO: `SinkMode.NativeOnly` routes every gameplay
+line through the engine or drops it with a visible reason, and `PackBuilder` compiles and
+registers every mapped variant ahead of time, warming per job. Details in `PLAN.md` §0 M7.
+
+The **Sound pack tab** now carries the checklist for everything still unmeasured. Run it
+and record the verdicts here:
+
+- [ ] **(b) Master slider** — fire, zero Master, fire again: second must be silent.
+- [ ] **(c) Voice / Sound Effects slider** — same, once per slider. Note *which* one
+      affects it: that finally answers the ⚠ bus-routing inference from Day 1.
+- [ ] **(d) Positional attenuation** — fire at offsets 0 / 10 / 25 yalms: volume must fall
+      with distance, and image L/R with camera turn.
+- [ ] **(e) 20 plays in 10 s** — the tab paces it and reports accepted/refused plus the
+      active-sound count before/after. The game's own audio must keep working. While
+      there, re-check the `SoundDataRefCount` climb (see "phantom PLAYED" below) — it has never been
+      re-measured with `autoRelease: true`, which is what production passes.
+- [ ] **(f) `speed` argument** — ×0.5 / ×1 / ×2 must change pitch and length. ⚠ This gates
+      `NativePitchViaSpeed` (default **on**): the game passes non-1 speeds for its own
+      sounds, but nobody has measured it on one of *our* containers. If the three sound
+      identical, turn the setting off — pitch then bakes at half-semitone steps instead.
+
+Also note while testing: warm-up at volume 0 (`Warm`) must stay inaudible, and switching
+jobs must warm the new job's set (watch the tab's warm counter move).
+
+---
+
 ## ✅ GO — it works (2026-08-17)
 
 **A clip we encoded, in a container we assembled, played through the game's own sound

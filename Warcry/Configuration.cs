@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Dalamud.Configuration;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using Warcry.Audio;
 
 namespace Warcry;
 
@@ -25,7 +26,7 @@ public sealed class Configuration : IPluginConfiguration
     /// The schema version this build writes. Bump it and add a step to
     /// <see cref="Migrate"/> whenever a field changes meaning or goes away.
     /// </summary>
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 
     /// <summary>Schema version. Bump and add an ordered migration step when fields change.</summary>
     public int Version { get; set; } = CurrentVersion;
@@ -50,17 +51,40 @@ public sealed class Configuration : IPluginConfiguration
     public bool PlayTestToneOnActions { get; set; } = true;
 
     /// <summary>
-    /// Route audio through the game's own sound engine instead of NAudio.
+    /// Which sink gameplay lines are routed to. See <see cref="SinkMode"/>.
     /// </summary>
     /// <remarks>
-    /// <para>Off by default, and it should stay off until PLAN.md §6 (b)–(e) have been
-    /// checked in game: the native path is proven to <em>play</em>, but its behaviour
+    /// <para>Defaults to <see cref="SinkMode.ManagedOnly"/> until PLAN.md §6 (b)–(e) have
+    /// been checked in game: the native path is proven to <em>play</em>, but its behaviour
     /// against the Master and Voice sliders, its positional attenuation, and its behaviour
-    /// under sustained load have never been measured.</para>
-    /// <para>Requires Penumbra. Falls back to the managed sink per line whenever the native
-    /// one cannot serve a request, so turning it on cannot make the plugin silent.</para>
+    /// under sustained load have never been measured. The Sound pack tab's checklist is
+    /// how they get measured.</para>
+    /// <para><see cref="SinkMode.NativeOnly"/> and <see cref="SinkMode.Auto"/> require
+    /// Penumbra. NativeOnly never substitutes NAudio — a refused line is a counted,
+    /// explained drop.</para>
     /// </remarks>
+    public SinkMode Sink { get; set; } = SinkMode.ManagedOnly;
+
+    /// <summary>
+    /// v1 field, superseded by <see cref="Sink"/>. Kept only so old configs deserialise;
+    /// <see cref="Migrate"/> folds it in. Nothing else may read it.
+    /// </summary>
     public bool PreferNativeSink { get; set; }
+
+    /// <summary>
+    /// Apply varispeed pitch through <c>PlaySound</c>'s speed argument instead of baking
+    /// it into the encoded file.
+    /// </summary>
+    /// <remarks>
+    /// <para>On, random pitch is free: one encoded variant per clip, and every roll rides
+    /// on the call. Off, rolled rates are snapped to half-semitone steps and each step is
+    /// its own encoded variant.</para>
+    /// <para>⚠ That the engine honours the speed argument on our containers is checklist
+    /// item (f) on the Sound pack tab — the game passes non-1 speeds for its own sounds,
+    /// but ours have never been measured. Turn this off if pitched mappings sound wrong
+    /// in native mode.</para>
+    /// </remarks>
+    public bool NativePitchViaSpeed { get; set; } = true;
 
     /// <summary>
     /// Play the synthesised tone when an action has no clip mapped. Useful while setting
@@ -185,6 +209,16 @@ public sealed class Configuration : IPluginConfiguration
 
         // -- add ordered migration steps here --
 
+        if (this.Version < 2)
+        {
+            // v1's bool became the SinkMode enum. Anyone who opted into the native sink
+            // gets the mode this rework was built for: the engine or an explained drop,
+            // never a quiet NAudio substitute. Auto remains available for anyone who
+            // preferred the old fallback behaviour.
+            this.Sink = this.PreferNativeSink ? SinkMode.NativeOnly : SinkMode.ManagedOnly;
+            this.Version = 2;
+        }
+
         this.Version = CurrentVersion;
         log.Information("Warcry: migrated configuration from version {From} to {To}.", from, this.Version);
         return true;
@@ -207,6 +241,13 @@ public sealed class Configuration : IPluginConfiguration
 
         this.MasterGain = Clamp(this.MasterGain, 0f, 4f, 1f, nameof(this.MasterGain));
         this.SelfCooldownSeconds = Clamp(this.SelfCooldownSeconds, 0f, 60f, 2f, nameof(this.SelfCooldownSeconds));
+
+        if (!Enum.IsDefined(this.Sink))
+        {
+            log.Warning("Warcry: Sink was {Value}; reset to ManagedOnly.", this.Sink);
+            this.Sink = SinkMode.ManagedOnly;
+            repairs++;
+        }
 
         // Hard ceiling, not taste: the game's SoundData pool is shared with the whole
         // client and its Voice bus has five tracks.

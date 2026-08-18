@@ -13,8 +13,11 @@ public enum DropStage : byte
     Throttle = 4,
     NoClip = 5,
 
-    /// <summary>Every sink refused the request — full, muted, or unavailable.</summary>
-    SinkFull = 6,
+    /// <summary>
+    /// The sink refused the request — at the cap, muted, unavailable, or (in NativeOnly
+    /// mode) any native refusal. The reason is on <c>CompositeVoiceSink.LastRefusal</c>.
+    /// </summary>
+    SinkRefused = 6,
     Gate = 7,
 
     /// <summary>

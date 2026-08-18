@@ -117,9 +117,10 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
             return false;
         }
 
-        if (!this.forge.TryForge(request.VariantKey, request.CreateSource, out var clip) || clip is null)
+        var createSource = request.CreateSource;
+        if (!this.forge.TryForge(request.VariantKey, () => createSource(1f), out var clip) || clip is null)
         {
-            this.LastRefusal = "clip is still encoding (first use of a clip always falls back)";
+            this.LastRefusal = "clip is not compiled yet — it is encoding now";
             return false;
         }
 
@@ -130,11 +131,14 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
             return false;
         }
 
-        // The warm-up is issued at registration, not charged to a play. If one has not
-        // happened yet, or has not had time to land, let the managed sink take this line.
+        // The warm-up is issued at registration or on a job switch, not charged to a
+        // play. A cold clip reaching this point means the warm scoping missed it — the
+        // player demonstrably CAN cast it — so heal immediately: warm it now, refuse
+        // this one line, and every later one plays.
         if (clip.WarmedAt == 0)
         {
-            this.LastRefusal = "clip encoded but not yet warmed — the next frame will warm it";
+            this.Warm(clip);
+            this.LastRefusal = "clip was cold — warmed just now, the next line will play";
             return false;
         }
 
@@ -144,6 +148,10 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
             return false;
         }
 
+        // Anything the pipeline did not bake into the encode rides on the engine's own
+        // speed argument. 1 when the variant carries its whole pitch already.
+        var speed = request.Speed > 0.01f ? request.Speed : 1f;
+
         try
         {
             var result = manager->PlaySound(
@@ -151,7 +159,7 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
                 gain,
                 0u,
                 request.Position.X, request.Position.Y, request.Position.Z,
-                1.0f,                       // pitch is baked into the encoded samples
+                speed,
                 0,
                 0u,                         // every audio index resolves to our clip
                 true,                       // engine owns the slot; never retain the pointer
@@ -171,7 +179,7 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
             }
 
             this.voiceEndsAt.Add(
-                Stopwatch.GetTimestamp() + (long)((clip.Seconds + TailSeconds) * Stopwatch.Frequency));
+                Stopwatch.GetTimestamp() + (long)(((clip.Seconds / speed) + TailSeconds) * Stopwatch.Frequency));
             this.LastRefusal = string.Empty;
             return true;
         }
@@ -183,13 +191,23 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
         }
     }
 
+    /// <summary>
+    /// Decides whether a just-registered clip warms immediately. Set by the pack builder,
+    /// which scopes warming to the current job; null warms everything, the pre-builder
+    /// behaviour.
+    /// </summary>
+    public Func<ForgedClip, bool>? WarmGate { get; set; }
+
     public void Update()
     {
         // Registers anything the background encoder finished. Must be the game thread:
         // Penumbra IPC is not safe to call from a worker.
         foreach (var clip in this.forge.Pump())
         {
-            this.Warm(clip);
+            if (this.WarmGate?.Invoke(clip) ?? true)
+            {
+                this.Warm(clip);
+            }
         }
 
         if (this.voiceEndsAt.Count == 0)
@@ -220,8 +238,13 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
     /// several mapped actions and a cooldown between them, that ramp is long enough to look
     /// exactly like the native path not working at all.</para>
     /// </remarks>
-    private void Warm(ForgedClip clip)
+    public void Warm(ForgedClip clip)
     {
+        if (clip.WarmedAt != 0)
+        {
+            return;
+        }
+
         var manager = SoundManager.Instance();
         if (manager == null)
         {

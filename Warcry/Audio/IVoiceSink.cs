@@ -8,28 +8,45 @@ namespace Warcry.Audio;
 public readonly struct VoiceRequest
 {
     /// <summary>
-    /// Builds a fresh mono 44100 Hz reader. Called at most once per sink that actually
-    /// plays the request, and not at all when a sink can serve it from cache.
+    /// Builds a fresh mono 44100 Hz reader, with the given extra playback rate baked on
+    /// top of whatever pitch the variant already carries. Pass 1 for the audio exactly as
+    /// <see cref="VariantKey"/> identifies it.
     /// </summary>
     /// <remarks>
-    /// A factory rather than an instance, for two reasons. The native sink has to
-    /// <em>drain</em> a provider to encode it, so handing the same instance to a fallback
-    /// would give it an exhausted reader and silence. And a request held back for a cast
-    /// bar no longer builds a provider it might never use.
+    /// <para>A factory rather than an instance, for two reasons. An encoder has to
+    /// <em>drain</em> a provider, so handing the same instance to a second consumer would
+    /// give it an exhausted reader and silence. And a request held back for a cast bar no
+    /// longer builds a provider it might never use.</para>
+    /// <para>The rate parameter exists because the two consumers want different audio from
+    /// the same request: the managed sink plays the finished line and calls with
+    /// <see cref="Speed"/>; the forge encodes the <em>base</em> variant and calls with 1,
+    /// leaving <see cref="Speed"/> for the engine's own speed argument.</para>
     /// </remarks>
-    public readonly Func<ISampleProvider> CreateSource;
+    public readonly Func<float, ISampleProvider> CreateSource;
 
     /// <summary>
-    /// Stable identity of the exact audio <see cref="CreateSource"/> will produce, or empty
+    /// Stable identity of the exact audio <c>CreateSource(1f)</c> will produce, or empty
     /// when there is none.
     /// </summary>
     /// <remarks>
-    /// Must cover every input that changes a sample — clip, rate, pitch mode, FFT size —
-    /// because the native sink content-addresses its encoded files by this key and will
-    /// serve a second request the first one's bytes. An empty key is honest: it means
-    /// "uncacheable", and the native sink declines rather than guessing.
+    /// Must cover every input that changes a sample of the base rendering — clip, baked
+    /// rate, pitch mode, FFT size — because the native sink content-addresses its encoded
+    /// files by this key and will serve a second request the first one's bytes. An empty
+    /// key is honest: it means "uncacheable", and the native sink declines rather than
+    /// guessing.
     /// </remarks>
     public readonly string VariantKey;
+
+    /// <summary>
+    /// Playback rate the sink must apply on top of the encoded audio. 1 when the pitch is
+    /// fully baked into the variant.
+    /// </summary>
+    /// <remarks>
+    /// This is what lets a random per-cast pitch coexist with content-addressed encoding:
+    /// the variant stays one stable base rendering, and the roll rides in here — as the
+    /// engine's <c>speed</c> argument natively, or baked at play time by the managed sink.
+    /// </remarks>
+    public readonly float Speed;
 
     public readonly Vector3 Position;
 
@@ -42,8 +59,9 @@ public readonly struct VoiceRequest
     public readonly uint CasterEntityId;
 
     public VoiceRequest(
-        Func<ISampleProvider> createSource,
+        Func<float, ISampleProvider> createSource,
         string variantKey,
+        float speed,
         Vector3 position,
         byte soundCategory,
         float gain,
@@ -51,6 +69,7 @@ public readonly struct VoiceRequest
     {
         this.CreateSource = createSource;
         this.VariantKey = variantKey;
+        this.Speed = speed;
         this.Position = position;
         this.SoundCategory = soundCategory;
         this.Gain = gain;
@@ -62,9 +81,10 @@ public readonly struct VoiceRequest
 /// The seam that lets the native-audio question stay unanswered without blocking the plugin.
 /// </summary>
 /// <remarks>
-/// Implementations: <see cref="ManagedVoiceSink"/> (NAudio, ships by default),
-/// a future NativeVoiceSink (SoundManager.PlaySound via Penumbra-redirected .scd, spike-gated),
-/// and a null sink. See docs/PLAN.md 5.6.
+/// Implementations: <see cref="NativeVoiceSink"/> (SoundManager.PlaySound on a forged,
+/// Penumbra-redirected .scd), <see cref="ManagedVoiceSink"/> (NAudio — audition, and the
+/// gameplay path only when the sink mode says so), and <see cref="CompositeVoiceSink"/>,
+/// which routes between them per <see cref="SinkMode"/>. See docs/PLAN.md 5.6.
 /// </remarks>
 public interface IVoiceSink : IDisposable
 {

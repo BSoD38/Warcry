@@ -8,6 +8,7 @@ using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.ImGuiFileDialog;
 using Dalamud.Interface.Textures;
 using Dalamud.Interface.Windowing;
+using Warcry.Audio;
 using Warcry.Clips;
 using Warcry.Native;
 using Warcry.Profiles;
@@ -22,7 +23,7 @@ namespace Warcry.Windows;
 /// docs/PLAN.md marks as runtime-only — above all whether Header.ActionId or Header.SpellId
 /// is the correct mapping key, which must be decided before the editor writes any user data.
 /// </summary>
-public sealed class MainWindow : Window, IDisposable
+public sealed partial class MainWindow : Window, IDisposable
 {
     private readonly Plugin plugin;
 
@@ -55,9 +56,7 @@ public sealed class MainWindow : Window, IDisposable
     private bool onlyObserved;
     private bool matchesTruncated;
     private bool jumpToMappings;
-    private readonly Dictionary<uint, bool> actionJobMatch = [];
-    private uint cachedCategoryJob = uint.MaxValue;
-    private System.Reflection.PropertyInfo? categoryProperty;
+
 
     public MainWindow(Plugin plugin) : base("Warcry###WarcryMain")
     {
@@ -111,6 +110,12 @@ public sealed class MainWindow : Window, IDisposable
             if (ImGui.BeginTabItem("Clips"))
             {
                 this.DrawClips();
+                ImGui.EndTabItem();
+            }
+
+            if (ImGui.BeginTabItem("Sound pack"))
+            {
+                this.DrawSoundPack();
                 ImGui.EndTabItem();
             }
 
@@ -612,7 +617,7 @@ public sealed class MainWindow : Window, IDisposable
         foreach (var stage in new[]
                  {
                      DropStage.PlaybackOff, DropStage.Gate, DropStage.Throttle,
-                     DropStage.NoClip, DropStage.SinkFull, DropStage.NotPc, DropStage.NotAction,
+                     DropStage.NoClip, DropStage.SinkRefused, DropStage.NotPc, DropStage.NotAction,
                  })
         {
             var n = this.plugin.Diag.DropCount(stage);
@@ -644,48 +649,89 @@ public sealed class MainWindow : Window, IDisposable
         }
     }
 
+    private static readonly (SinkMode Mode, string Label, string Blurb)[] SinkModes =
+    [
+        (SinkMode.NativeOnly, "Game engine only",
+         "Every line goes through the game's own sound engine, or it does not play at all.\n" +
+         "A line the engine cannot serve is a counted drop with a reason on the Events tab —\n" +
+         "never a quiet NAudio substitute. Requires Penumbra and a compiled sound pack."),
+        (SinkMode.Auto, "Game engine, NAudio fallback",
+         "Native first; anything the engine cannot serve this instant (a cold clip, Penumbra\n" +
+         "missing) is played by NAudio instead. Forgiving, but what you hear is not always\n" +
+         "the engine."),
+        (SinkMode.ManagedOnly, "NAudio only",
+         "The plugin mixes and plays everything itself. No Penumbra needed, no .scd\n" +
+         "encoding — and none of the engine's positioning, bus routing or volume rules."),
+        (SinkMode.Off, "Off",
+         "Nothing plays on actions. Auditioning from the editor still works."),
+    ];
+
     /// <summary>
-    /// The native-engine toggle, with the honest caveats attached to it rather than buried
+    /// The sink-mode choice, with the honest caveats attached to it rather than buried
     /// in a document.
     /// </summary>
     private void DrawNativeSinkSetting(Configuration cfg, ref bool dirty)
     {
         var penumbra = this.plugin.Penumbra.PenumbraAvailable;
 
-        if (!penumbra)
+        var currentLabel = "?";
+        foreach (var (mode, label, _) in SinkModes)
         {
-            ImGui.BeginDisabled();
+            if (mode == cfg.Sink)
+            {
+                currentLabel = label;
+            }
         }
 
-        var native = cfg.PreferNativeSink;
-        if (ImGui.Checkbox("Play through the game's sound engine", ref native))
+        ImGui.SetNextItemWidth(260f);
+        if (ImGui.BeginCombo("Sound output", currentLabel))
         {
-            cfg.PreferNativeSink = native;
-            dirty = true;
+            foreach (var (mode, label, blurb) in SinkModes)
+            {
+                var needsPenumbra = mode is SinkMode.NativeOnly or SinkMode.Auto;
+                var disabled = needsPenumbra && !penumbra;
+
+                if (disabled)
+                {
+                    ImGui.BeginDisabled();
+                }
+
+                if (ImGui.Selectable(label, mode == cfg.Sink))
+                {
+                    cfg.Sink = mode;
+                    dirty = true;
+                }
+
+                if (disabled)
+                {
+                    ImGui.EndDisabled();
+                }
+
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                {
+                    ImGui.SetTooltip(disabled ? $"{blurb}\n\n(Requires Penumbra, which is not loaded.)" : blurb);
+                }
+            }
+
+            ImGui.EndCombo();
         }
 
-        if (ImGui.IsItemHovered())
+        // The consequence line: one sentence saying what the current choice means, in the
+        // same words the Status tab will use when it happens.
+        ImGui.TextDisabled(cfg.Sink switch
         {
-            ImGui.SetTooltip(
-                "Encodes each clip into the game's own .scd format and lets the engine play it,\n" +
-                "instead of mixing it ourselves with NAudio.\n\n" +
-                "What that buys: the game does the mixing and positioning, on its own bus and\n" +
-                "its own output device, by the same code that plays every other sound.\n\n" +
-                "What it costs: a hard dependency on Penumbra, and the first play of each clip\n" +
-                "is spent loading it — that one line comes out of the managed sink instead.\n\n" +
-                "Not yet measured: behaviour against the Master and Voice sliders, positional\n" +
-                "falloff, and sustained load. It is proven to play; it is not proven to behave.\n" +
-                "Anything it cannot serve falls back per line, so this cannot make you silent.");
+            SinkMode.NativeOnly => "  Engine or silence. A refused line is a visible drop, never NAudio.",
+            SinkMode.Auto => "  Engine when it can, NAudio when it cannot. Fallbacks are quiet by design.",
+            SinkMode.ManagedOnly => "  NAudio for everything. The engine and Penumbra are not involved.",
+            _ => "  Nothing plays on actions.",
+        });
+
+        if (!penumbra && cfg.Sink is SinkMode.NativeOnly or SinkMode.Auto)
+        {
+            ImGui.TextUnformatted("  ⚠ Penumbra is not loaded, so nothing can reach the engine right now.");
         }
 
-        if (!penumbra)
-        {
-            ImGui.EndDisabled();
-            ImGui.TextDisabled("  Requires Penumbra, which is not loaded.");
-            return;
-        }
-
-        if (!cfg.PreferNativeSink)
+        if (cfg.Sink is not (SinkMode.NativeOnly or SinkMode.Auto))
         {
             return;
         }
@@ -697,19 +743,16 @@ public sealed class MainWindow : Window, IDisposable
                            $"{composite.ManagedPlays} via NAudio, " +
                            $"{forge.Count} clip(s) encoded, {forge.WarmedCount} warmed.");
 
-        // The failure this reports is the one that actually happened: a clip's first use
-        // always falls back while it encodes, which looks identical to native being broken.
         if (composite.NativeRefusal.Length > 0)
         {
-            ImGui.TextDisabled($"  Last fallback: {composite.NativeRefusal}");
+            ImGui.TextDisabled($"  Last native refusal: {composite.NativeRefusal}");
         }
 
-        if (composite.NativePlays == 0 && forge.Count > 0)
+        if (composite.Demoted)
         {
-            ImGui.TextWrapped(
-                "  Clips are encoded but nothing has gone through the engine yet. The first use " +
-                "of each clip is always served by NAudio while it encodes in the background — " +
-                "use the same action a second time.");
+            ImGui.TextUnformatted(cfg.Sink == SinkMode.NativeOnly
+                ? "  ⚠ The native sink was demoted after repeated errors. Sink mode is Game engine only, so NOTHING IS PLAYING. See the log."
+                : "  ⚠ The native sink was demoted after repeated errors; NAudio is serving everything. See the log.");
         }
     }
 
@@ -763,7 +806,7 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.TextUnformatted($"  Voices        {sink.ActiveVoices} / {this.plugin.Config.MaxConcurrent}");
         ImGui.TextUnformatted($"  Routed        {composite.NativePlays} engine / {composite.ManagedPlays} NAudio");
 
-        if (this.plugin.Config.PreferNativeSink)
+        if (this.plugin.Config.Sink is SinkMode.NativeOnly or SinkMode.Auto)
         {
             ImGui.TextUnformatted($"  Forge         {forge.Status}");
             if (forge.TemplatePath.Length > 0)
@@ -771,7 +814,7 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.TextDisabled($"                container cloned from {forge.TemplatePath}");
             }
         }
-        ImGui.TextUnformatted($"  Scheduler     {sched.PendingCount} pending, {sched.Dispatched} dispatched, {sched.Cancelled} cancelled");
+        ImGui.TextUnformatted($"  Scheduler     {sched.PendingCount} pending, {sched.Dispatched} dispatched, {sched.Refused} refused, {sched.Cancelled} cancelled");
 
         // The whole point of reading the game's config: this number should track your
         // in-game sliders live. If it stays 1.00 while you move Master, it isn't wired.
@@ -1215,6 +1258,12 @@ public sealed class MainWindow : Window, IDisposable
                 ImGui.SameLine();
                 ImGui.TextDisabled("->");
 
+                // Unassigning a rule's last clip deletes the whole rule from the store.
+                // The widgets after the clip loop must then not draw: they belong to an
+                // object no longer in the document, and an edit to them would Save() a
+                // document without it — silently discarding the edit.
+                var ruleDeleted = false;
+
                 foreach (var clipRef in rule.Clips.ToArray())
                 {
                     ImGui.SameLine();
@@ -1241,8 +1290,15 @@ public sealed class MainWindow : Window, IDisposable
                     if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
                     {
                         store.RemoveClipFromRule(profile, rule, clipRef.Hash);
+                        ruleDeleted = rule.Clips.Count == 0;
                         break;
                     }
+                }
+
+                if (ruleDeleted)
+                {
+                    ImGui.PopID();
+                    continue;
                 }
 
                 if (rule.Clips.Count > 1)
@@ -1391,105 +1447,15 @@ public sealed class MainWindow : Window, IDisposable
         return lp?.ClassJob.RowId ?? 0u;
     }
 
-    /// <summary>Localized — for display only.</summary>
-    private static string JobLabel(uint jobId)
-    {
-        var sheet = Plugin.Data.GetExcelSheet<Lumina.Excel.Sheets.ClassJob>();
-        return sheet.TryGetRow(jobId, out var row) ? row.Abbreviation.ExtractText() : jobId.ToString();
-    }
+    /// <summary>Localized — for display only. The logic lives in <see cref="JobIndex"/>.</summary>
+    private string JobLabel(uint jobId) => this.plugin.Jobs.JobLabel(jobId);
 
     /// <summary>
-    /// Always English — used to match Lumina's schema-generated ClassJobCategory
-    /// property names, which are not localized. Never use <see cref="JobLabel"/> for that.
+    /// Job membership, shared with the pack builder's warm scoping via
+    /// <see cref="JobIndex"/> — the editor's list and the warm set can never disagree.
     /// </summary>
-    private static string EnglishJobAbbreviation(uint jobId)
-    {
-        var sheet = Plugin.Data.GetExcelSheet<Lumina.Excel.Sheets.ClassJob>(Dalamud.Game.ClientLanguage.English);
-        return sheet.TryGetRow(jobId, out var row) ? row.Abbreviation.ExtractText() : string.Empty;
-    }
-
-    /// <summary>
-    /// A job's actions are split across the job AND its base class — a Black Mage's
-    /// early spells are attributed to Thaumaturge — so filtering on the job alone would
-    /// silently hide half of them.
-    /// </summary>
-    private static uint ParentJobOf(uint jobId)
-    {
-        var sheet = Plugin.Data.GetExcelSheet<Lumina.Excel.Sheets.ClassJob>();
-        if (!sheet.TryGetRow(jobId, out var row))
-        {
-            return 0;
-        }
-
-        var parent = row.ClassJobParent.RowId;
-        return parent == jobId ? 0 : parent;
-    }
-
-    /// <summary>
-    /// Some real player actions carry no <c>ClassJob</c> at all — conditional or
-    /// transformed ones such as RDM's Enchanted Riposte, which replace another action
-    /// rather than being learned and slotted. For those, <c>ClassJobCategory</c> is the
-    /// only signal that says which jobs can use them.
-    /// </summary>
-    /// <remarks>
-    /// Lumina generates ClassJobCategory with ~40 bool properties named by job
-    /// abbreviation (ADV, GLA, ... RDM) and no indexer, so the property is resolved by
-    /// reflection once per selected job and reused for every row.
-    /// </remarks>
-    private bool CategoryIncludesJob(in GameAction row, uint jobId)
-    {
-        if (this.cachedCategoryJob != jobId)
-        {
-            this.cachedCategoryJob = jobId;
-
-            // MUST be the English abbreviation. Lumina names these properties from the
-            // schema (RDM, BLM, ...), but ClassJob.Abbreviation is LOCALIZED — on a
-            // French client RDM reads "MRG", and GetProperty would silently return null.
-            var abbreviation = EnglishJobAbbreviation(jobId);
-            this.categoryProperty = string.IsNullOrWhiteSpace(abbreviation)
-                ? null
-                : typeof(Lumina.Excel.Sheets.ClassJobCategory)
-                    .GetProperty(abbreviation, BindingFlags.Public | BindingFlags.Instance);
-        }
-
-        if (this.categoryProperty is null)
-        {
-            return false;
-        }
-
-        var category = row.ClassJobCategory.ValueNullable;
-        return category.HasValue && this.categoryProperty.GetValue(category.Value) is true;
-    }
-
     private bool ActionBelongsToJob(in GameAction row, uint jobId)
-    {
-        if (jobId == 0)
-        {
-            return true;
-        }
-
-        var actionJob = row.ClassJob.RowId;
-
-        if (actionJob == jobId)
-        {
-            return true;
-        }
-
-        // A job's kit is split across the job and its base class — BLM's early spells
-        // are attributed to THM — so the parent must be accepted too.
-        var parent = ParentJobOf(jobId);
-        if (parent != 0 && actionJob == parent)
-        {
-            return true;
-        }
-
-        // Consulted whenever the direct match fails, not only when ClassJob is unset:
-        // enchanted/conditional variants can carry a ClassJob that is neither the job
-        // nor its parent. The broader categories this admits — role actions, Sprint,
-        // general actions — are all things the job can genuinely press, so they belong
-        // in a list of "actions I might want a voiceline on".
-        return this.CategoryIncludesJob(in row, jobId);
-    }
+        => this.plugin.Jobs.ActionBelongsToJob(in row, jobId);
 
     /// <summary>Why a given action did or did not land in the filtered list.</summary>
     private string ActionDebugInfo(uint actionId)
@@ -1516,21 +1482,14 @@ public sealed class MainWindow : Window, IDisposable
             return true;
         }
 
-        if (this.actionJobMatch.TryGetValue(actionId, out var cached))
-        {
-            return cached;
-        }
-
-        var sheet = Plugin.Data.GetExcelSheet<GameAction>();
-        var result = sheet.TryGetRow(actionId, out var row) && this.ActionBelongsToJob(in row, this.jobFilter);
-        this.actionJobMatch[actionId] = result;
-        return result;
+        // Memoised inside JobIndex, keyed (job, action) — sheet facts never change, so
+        // the cache needs no invalidation when the filter moves.
+        return this.plugin.Jobs.ActionBelongsToJob(actionId, this.jobFilter);
     }
 
     private void RebuildActionMatches()
     {
         this.actionMatches.Clear();
-        this.actionJobMatch.Clear();
         this.matchesTruncated = false;
 
         // With no job selected the sheet is far too large to browse, so require a search.

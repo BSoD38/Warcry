@@ -45,6 +45,15 @@ public sealed class ClipLibrary : IDisposable
     private readonly string manifestPath;
     private readonly IPluginLog log;
 
+    /// <summary>
+    /// Guards <see cref="cache"/> and <see cref="errors"/>. <see cref="LoadAsync"/> runs
+    /// on a worker while the ActionEffect detour calls <see cref="TryGet"/> and the UI
+    /// enumerates <see cref="Clips"/> and <see cref="Errors"/> — every access to either
+    /// collection takes this lock, and everything held under it is brief (the decode work
+    /// happens outside, into a local).
+    /// </summary>
+    private readonly object gate = new();
+
     private readonly Dictionary<string, CachedClip> cache = [];
     private readonly List<string> errors = [];
 
@@ -59,16 +68,50 @@ public sealed class ClipLibrary : IDisposable
         Directory.CreateDirectory(this.clipsDir);
     }
 
-    /// <summary>Snapshot of what is loaded. Read on the main thread only.</summary>
-    public IReadOnlyCollection<CachedClip> Clips => this.cache.Values;
+    /// <summary>A materialised snapshot — never a live view over the dictionary.</summary>
+    public IReadOnlyCollection<CachedClip> Clips
+    {
+        get
+        {
+            lock (this.gate)
+            {
+                return [.. this.cache.Values];
+            }
+        }
+    }
 
-    public int Count => this.cache.Count;
+    public int Count
+    {
+        get
+        {
+            lock (this.gate)
+            {
+                return this.cache.Count;
+            }
+        }
+    }
 
-    public IReadOnlyList<string> Errors => this.errors;
+    /// <summary>A snapshot; the loader appends from its worker thread.</summary>
+    public IReadOnlyList<string> Errors
+    {
+        get
+        {
+            lock (this.gate)
+            {
+                return [.. this.errors];
+            }
+        }
+    }
 
     public string ClipsDirectory => this.clipsDir;
 
-    public bool TryGet(string hash, out CachedClip clip) => this.cache.TryGetValue(hash, out clip!);
+    public bool TryGet(string hash, out CachedClip clip)
+    {
+        lock (this.gate)
+        {
+            return this.cache.TryGetValue(hash, out clip!);
+        }
+    }
 
     /// <summary>Rescans and decodes everything on disk. Off the game thread.</summary>
     public Task LoadAsync() => Task.Run(() =>
@@ -83,7 +126,7 @@ public sealed class ClipLibrary : IDisposable
                 var full = Path.Combine(this.clipsDir, info.Relative.Replace('/', Path.DirectorySeparatorChar));
                 if (!File.Exists(full))
                 {
-                    this.errors.Add($"{info.DisplayName}: file missing ({info.Relative})");
+                    this.AddError($"{info.DisplayName}: file missing ({info.Relative})");
                     continue;
                 }
 
@@ -94,21 +137,25 @@ public sealed class ClipLibrary : IDisposable
                 }
                 catch (Exception ex)
                 {
-                    this.errors.Add($"{info.DisplayName}: {ex.Message}");
+                    this.AddError($"{info.DisplayName}: {ex.Message}");
                 }
             }
 
             // Publish as one swap rather than mutating while the game thread may read.
-            lock (this.cache)
+            // The decode work above deliberately happened outside the lock.
+            int errorCount;
+            lock (this.gate)
             {
                 this.cache.Clear();
                 foreach (var (k, v) in loaded)
                 {
                     this.cache[k] = v;
                 }
+
+                errorCount = this.errors.Count;
             }
 
-            this.log.Information("ClipLibrary: loaded {Count} clips, {Errors} errors", loaded.Count, this.errors.Count);
+            this.log.Information("ClipLibrary: loaded {Count} clips, {Errors} errors", loaded.Count, errorCount);
         }
         catch (Exception ex)
         {
@@ -127,13 +174,13 @@ public sealed class ClipLibrary : IDisposable
             var ext = Path.GetExtension(sourcePath).ToLowerInvariant();
             if (!Accepted.Contains(ext))
             {
-                this.errors.Add($"{Path.GetFileName(sourcePath)}: unsupported type {ext} (wav and ogg only)");
+                this.AddError($"{Path.GetFileName(sourcePath)}: unsupported type {ext} (wav and ogg only)");
                 return null;
             }
 
             if (!File.Exists(sourcePath))
             {
-                this.errors.Add($"{sourcePath}: not found");
+                this.AddError($"{sourcePath}: not found");
                 return null;
             }
 
@@ -143,10 +190,13 @@ public sealed class ClipLibrary : IDisposable
                 hash = Convert.ToHexString(SHA256.HashData(fs)).ToLowerInvariant();
             }
 
-            if (this.cache.ContainsKey(hash))
+            lock (this.gate)
             {
-                this.log.Information("ClipLibrary: {Name} already imported", Path.GetFileName(sourcePath));
-                return hash;
+                if (this.cache.ContainsKey(hash))
+                {
+                    this.log.Information("ClipLibrary: {Name} already imported", Path.GetFileName(sourcePath));
+                    return hash;
+                }
             }
 
             // Shard by the first two hex chars so one directory never holds thousands.
@@ -170,14 +220,14 @@ public sealed class ClipLibrary : IDisposable
             if (durationMs > MaxDurationMs)
             {
                 File.Delete(dest);
-                this.errors.Add($"{Path.GetFileName(sourcePath)}: {durationMs / 1000.0:0.0}s exceeds the {MaxDurationMs / 1000}s cap");
+                this.AddError($"{Path.GetFileName(sourcePath)}: {durationMs / 1000.0:0.0}s exceeds the {MaxDurationMs / 1000}s cap");
                 return null;
             }
 
             if (samples.Length == 0)
             {
                 File.Delete(dest);
-                this.errors.Add($"{Path.GetFileName(sourcePath)}: decoded to zero samples");
+                this.AddError($"{Path.GetFileName(sourcePath)}: decoded to zero samples");
                 return null;
             }
 
@@ -193,7 +243,7 @@ public sealed class ClipLibrary : IDisposable
                 ImportedAt = DateTime.UtcNow,
             };
 
-            lock (this.cache)
+            lock (this.gate)
             {
                 this.cache[hash] = new CachedClip(info, samples);
             }
@@ -205,16 +255,20 @@ public sealed class ClipLibrary : IDisposable
         catch (Exception ex)
         {
             this.log.Error(ex, "ClipLibrary: import failed for {Path}", sourcePath);
-            this.errors.Add($"{Path.GetFileName(sourcePath)}: {ex.Message}");
+            this.AddError($"{Path.GetFileName(sourcePath)}: {ex.Message}");
             return null;
         }
     }
 
     public void Remove(string hash)
     {
-        if (!this.cache.TryGetValue(hash, out var clip))
+        CachedClip? clip;
+        lock (this.gate)
         {
-            return;
+            if (!this.cache.TryGetValue(hash, out clip))
+            {
+                return;
+            }
         }
 
         try
@@ -230,7 +284,7 @@ public sealed class ClipLibrary : IDisposable
             this.log.Warning(ex, "ClipLibrary: could not delete {Relative}", clip.Info.Relative);
         }
 
-        lock (this.cache)
+        lock (this.gate)
         {
             this.cache.Remove(hash);
         }
@@ -238,7 +292,21 @@ public sealed class ClipLibrary : IDisposable
         this.SaveManifest();
     }
 
-    public void ClearErrors() => this.errors.Clear();
+    public void ClearErrors()
+    {
+        lock (this.gate)
+        {
+            this.errors.Clear();
+        }
+    }
+
+    private void AddError(string message)
+    {
+        lock (this.gate)
+        {
+            this.errors.Add(message);
+        }
+    }
 
     /// <summary>Decodes to mono 44.1 kHz float, which is what the mixer and the game both use.</summary>
     private static float[] Decode(string path, out int sourceRate, out int sourceChannels)
@@ -306,7 +374,13 @@ public sealed class ClipLibrary : IDisposable
     {
         try
         {
-            var manifest = new ClipManifest { Clips = this.cache.Values.Select(c => c.Info).ToList() };
+            List<ClipInfo> infos;
+            lock (this.gate)
+            {
+                infos = this.cache.Values.Select(c => c.Info).ToList();
+            }
+
+            var manifest = new ClipManifest { Clips = infos };
             var json = JsonSerializer.Serialize(manifest, JsonOptions);
 
             var tmp = this.manifestPath + ".tmp";
@@ -321,7 +395,7 @@ public sealed class ClipLibrary : IDisposable
 
     public void Dispose()
     {
-        lock (this.cache)
+        lock (this.gate)
         {
             this.cache.Clear();
         }

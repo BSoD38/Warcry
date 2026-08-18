@@ -181,15 +181,48 @@ public static class ScdWriter
             return false;
         }
 
-        var sounds = ReadTable(span, soundTable, soundCount);
-        var audio = ReadTable(span, audioTable, audioCount);
-        var t3 = table3Count > 0 ? ReadTable(span, table3, table3Count) : [];
+        // Every offset below comes straight from the file. This function is reachable from
+        // the cast path (forge initialisation), so a truncated or hostile file must come
+        // back as `false`, never as an ArgumentOutOfRangeException.
+        if (!TryReadTable(span, soundTable, soundCount, out var sounds) ||
+            !TryReadTable(span, audioTable, audioCount, out var audio))
+        {
+            error = "an entry-offset table lies outside the file";
+            return false;
+        }
+
+        uint[] t3 = [];
+        if (table3Count > 0 && !TryReadTable(span, table3, table3Count, out t3))
+        {
+            error = "the group-header table lies outside the file";
+            return false;
+        }
+
+        foreach (var off in sounds)
+        {
+            if (off >= (uint)scd.Length)
+            {
+                error = $"sound entry offset 0x{off:X} is past the end of the file";
+                return false;
+            }
+        }
+
+        foreach (var off in audio)
+        {
+            if (off >= (uint)scd.Length)
+            {
+                error = $"audio entry offset 0x{off:X} is past the end of the file";
+                return false;
+            }
+        }
 
         // Entry sizes are inferred from the gap to the next entry. Sound entries are
         // variable-length in the real files, so this must not be assumed constant.
+        // Long arithmetic: these are file-supplied u32s, and a wrapped subtraction would
+        // read as a huge positive length.
         var soundLen = soundCount > 1
-            ? (int)(sounds[1] - sounds[0])
-            : (int)(audio[0] - sounds[0]);
+            ? (int)((long)sounds[1] - sounds[0])
+            : (int)((long)audio[0] - sounds[0]);
 
         var t3Len = 0;
         var t3Off = 0;
@@ -223,15 +256,23 @@ public static class ScdWriter
         return true;
     }
 
-    private static uint[] ReadTable(ReadOnlySpan<byte> span, int offset, int count)
+    private static bool TryReadTable(ReadOnlySpan<byte> span, int offset, int count, out uint[] result)
     {
-        var result = new uint[count];
-        for (var i = 0; i < count; i++)
+        result = [];
+
+        if (offset < 0 || count < 0 || (long)offset + ((long)count * 4) > span.Length)
         {
-            result[i] = BinaryPrimitives.ReadUInt32LittleEndian(span[(offset + (i * 4))..]);
+            return false;
         }
 
-        return result;
+        var table = new uint[count];
+        for (var i = 0; i < count; i++)
+        {
+            table[i] = BinaryPrimitives.ReadUInt32LittleEndian(span[(offset + (i * 4))..]);
+        }
+
+        result = table;
+        return true;
     }
 
     /// <summary>

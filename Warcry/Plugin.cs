@@ -64,6 +64,12 @@ public sealed class Plugin : IDalamudPlugin
     /// <summary>Encodes clips into game-loadable <c>.scd</c> and owns their redirects.</summary>
     public ScdForge Forge { get; }
 
+    /// <summary>Job-membership answers, shared by the editor's filter and the warm scoping.</summary>
+    public JobIndex Jobs { get; }
+
+    /// <summary>Compiles every mapping ahead of time and keeps the current job's set warm.</summary>
+    public PackBuilder Packs { get; }
+
     public PlaybackScheduler Scheduler { get; }
 
     /// <summary>Native-audio spike, day 1. Read-only observer, disabled by default.</summary>
@@ -154,8 +160,14 @@ public sealed class Plugin : IDalamudPlugin
             new NativeVoiceSink(Log, this.Config, this.Forge),
             new ManagedVoiceSink(Log, this.Volume, this.Config));
 
+        this.Jobs = new JobIndex(Data);
+        this.Packs = new PackBuilder(
+            Log, this.Config, this.Profiles, this.Clips, this.Forge, this.Jobs, this.Composite.Native);
+
         this.Sink = this.Composite;
-        this.Scheduler = new PlaybackScheduler(this.Sink);
+        this.Scheduler = new PlaybackScheduler(
+            this.Sink,
+            () => this.Diag.Drop(DropStage.SinkRefused));
 
         // Installs the hook. Failure is logged and left inert — never thrown.
         this.Watcher = new ActionWatcher(Interop, Log, this.VoiceSlots, () => PlayerState.EntityId, this.OnCast);
@@ -251,24 +263,40 @@ public sealed class Plugin : IDalamudPlugin
         // Which clip, for this caster, for this action.
         var resolved = this.Resolver.Resolve(in ev.Caster, in actionKey);
 
-        Func<NAudio.Wave.ISampleProvider> createSource;
+        Func<float, NAudio.Wave.ISampleProvider> createSource;
         string variantKey;
+        var speed = 1f;
         var gain = 1f;
 
         if (resolved is { } r && this.Clips.TryGet(r.Clip.Hash, out var cached))
         {
-            var rate = r.Rate;
             var mode = r.Rule.PitchMode;
             var fft = r.Rule.PitchFftSize;
 
-            createSource = () => cached.CreateProvider(rate, mode, fft);
-            variantKey = VariantKey(r.Clip.Hash, rate, mode, fft);
+            if (mode == PitchMode.Varispeed && this.Config.NativePitchViaSpeed)
+            {
+                // One stable base variant per clip; the per-cast pitch roll rides on the
+                // request's Speed — the engine's own speed argument natively, baked at
+                // play time by the managed sink. Random pitch costs no extra encodes.
+                createSource = extra => cached.CreateProvider(extra, mode, fft);
+                variantKey = VariantKey(r.Clip.Hash, 1f, mode, fft);
+                speed = r.Rate;
+            }
+            else
+            {
+                // Baked pitch. Snapped to half-semitone steps so a random spread stays a
+                // finite, pre-compilable set of variants rather than one per roll.
+                var rate = CachedClip.QuantiseRate(r.Rate);
+                createSource = extra => cached.CreateProvider(rate * extra, mode, fft);
+                variantKey = VariantKey(r.Clip.Hash, rate, mode, fft);
+            }
+
             gain = r.CombinedGain;
         }
         else if (this.Config.FallBackToTestTone)
         {
             // Nothing mapped for this action. Audible feedback while setting mappings up.
-            createSource = () => new TestTone();
+            createSource = _ => new TestTone();
             variantKey = TestToneKey;
         }
         else
@@ -280,6 +308,7 @@ public sealed class Plugin : IDalamudPlugin
         var request = new VoiceRequest(
             createSource: createSource,
             variantKey: variantKey,
+            speed: speed,
             position: ev.Position,
             soundCategory: ev.SoundCategory,
             gain: gain,
@@ -299,16 +328,31 @@ public sealed class Plugin : IDalamudPlugin
             // Every sink refused: at the concurrency cap, muted by the game's own sliders,
             // or no output device. Previously invisible — the row read "ok" and nothing
             // came out of the speakers.
-            this.Diag.Drop(DropStage.SinkFull);
+            this.Diag.Drop(DropStage.SinkRefused);
         }
     }
+
+    /// <summary>The local player's job, refreshed once per frame beside the position.</summary>
+    public uint CachedJobId { get; private set; }
 
     private void OnFrameworkUpdate(IFramework framework)
     {
         this.elapsed += framework.UpdateDelta.TotalSeconds;
-        this.CachedPlayerPosition = Objects.LocalPlayer?.Position ?? System.Numerics.Vector3.Zero;
+
+        // One object-table read per frame serves everyone: position for the watcher's
+        // distance check, job for the pack builder's warm scoping. Never read from the
+        // detour; never read twice.
+        var lp = Objects.LocalPlayer;
+        this.CachedPlayerPosition = lp?.Position ?? System.Numerics.Vector3.Zero;
+        this.CachedJobId = lp?.ClassJob.RowId ?? 0u;
+
         this.Volume.Update(this.elapsed);
         this.Scheduler.Update();
+
+        // Before the sink pumps: the builder's job answer is what the sink's warm gate
+        // consults for anything registered this frame.
+        this.Packs.Update(this.CachedJobId);
+
         this.Sink.Update();
         this.Spike.Update();
 
@@ -486,32 +530,33 @@ public sealed class Plugin : IDalamudPlugin
         // record what actually happened to recent events.
         var noClip = this.Diag.DropCount(DropStage.NoClip);
         var throttled = this.Diag.DropCount(DropStage.Throttle);
-        var sinkFull = this.Diag.DropCount(DropStage.SinkFull);
+        var sinkRefused = this.Diag.DropCount(DropStage.SinkRefused);
 
-        if (noClip > 0 && noClip >= throttled && noClip >= sinkFull)
+        if (noClip > 0 && noClip >= throttled && noClip >= sinkRefused)
         {
             return $"Nothing is blocking playback, but {noClip} event(s) resolved to no clip — " +
                    "the actions you are using are not the ones your mappings cover. The Events " +
                    "tab shows the ActionId that actually fired.";
         }
 
-        if (throttled > 0 && throttled >= sinkFull)
+        if (throttled > 0 && throttled >= sinkRefused)
         {
             return $"Nothing is blocking playback, but {throttled} event(s) were throttled — " +
                    "cooldown, auto-attack skip, casts-only, or a muted action.";
         }
 
-        if (sinkFull > 0)
+        if (sinkRefused > 0)
         {
-            return $"Nothing is blocking playback, but {sinkFull} event(s) were refused by the " +
-                   "sink — usually the \"max at once\" cap.";
+            var reason = this.Composite.LastRefusal;
+            return $"Nothing is blocking playback, but {sinkRefused} event(s) were refused by the " +
+                   $"sink{(reason.Length > 0 ? $" — last reason: {reason}" : " — usually the \"max at once\" cap")}.";
         }
 
         return string.Empty;
     }
 
     /// <summary>The synthesised tone is deterministic, so it caches like any other clip.</summary>
-    private const string TestToneKey = "warcry:testtone:v1";
+    public const string TestToneKey = "warcry:testtone:v1";
 
     /// <summary>
     /// Identity of one exact rendering of a clip.
@@ -521,17 +566,24 @@ public sealed class Plugin : IDalamudPlugin
     /// content-addresses encoded files by this key and will serve a later request the
     /// earlier one's bytes, so a missing parameter means the wrong audio plays — quietly,
     /// and only for mappings that differ solely by the parameter that was left out.
+    /// <para>Public because <see cref="Native.PackBuilder"/> must enumerate, ahead of
+    /// time, the exact keys this method will produce at cast time. Invariant culture,
+    /// always: the rate would otherwise format as "1,0000" on a French client, and the
+    /// builder parses the format back.</para>
     /// </remarks>
-    private static string VariantKey(string hash, float rate, PitchMode mode, int fftSize)
-        => $"{hash}:{rate:0.0000}:{(byte)mode}:{fftSize}";
+    public static string VariantKey(string hash, float rate, PitchMode mode, int fftSize)
+        => string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"{hash}:{rate:0.0000}:{(byte)mode}:{fftSize}");
 
     /// <summary>Fires a tone at your own position, through the full gain chain.</summary>
     public void PlayTestTone()
     {
         var lp = Objects.LocalPlayer;
         var request = new VoiceRequest(
-            createSource: () => new TestTone(),
+            createSource: _ => new TestTone(),
             variantKey: TestToneKey,
+            speed: 1f,
             position: lp?.Position ?? System.Numerics.Vector3.Zero,
             soundCategory: 0, // Player
             gain: 1f,
@@ -593,21 +645,28 @@ public sealed class Plugin : IDalamudPlugin
         return sheet.TryGetRow(actionId, out var row) ? row.Name.ExtractText() : string.Empty;
     }
 
-    /// <summary>Auditions one clip at your own position, through the full gain chain.</summary>
+    /// <summary>Auditions one clip at your own position.</summary>
+    /// <remarks>
+    /// Straight to the managed sink, never the composite: a preview must work before any
+    /// compile has happened, must not depend on Penumbra, and must never spend one of the
+    /// native path's voices. It is a preview of the clip, not a test of the pipeline —
+    /// <c>/warcry test</c> is the pipeline test.
+    /// </remarks>
     public void PlayClip(CachedClip clip, float rate = 1f, PitchMode mode = PitchMode.Varispeed, int fftSize = 2048)
     {
         var lp = Objects.LocalPlayer;
         var request = new VoiceRequest(
-            createSource: () => clip.CreateProvider(rate, mode, fftSize),
+            createSource: extra => clip.CreateProvider(rate * extra, mode, fftSize),
             variantKey: VariantKey(clip.Info.Hash, rate, mode, fftSize),
+            speed: 1f,
             position: lp?.Position ?? System.Numerics.Vector3.Zero,
             soundCategory: 0,
             gain: 1f,
             casterEntityId: PlayerState.EntityId);
 
-        if (!this.Scheduler.Schedule(in request, 0f))
+        if (!this.Composite.Managed.TryPlay(in request))
         {
-            Log.Warning("Audition refused — sink unavailable, muted, or at the concurrency cap.");
+            Log.Warning("Audition refused — no audio device, muted, or at the concurrency cap.");
         }
     }
 
@@ -621,9 +680,14 @@ public sealed class Plugin : IDalamudPlugin
         ClientState.TerritoryChanged -= this.OnTerritoryChanged;
 
         this.Scheduler.CancelAll();
+
+        // Before the sink: the spike may hold a retained SoundData*, and releasing it
+        // needs the engine still reachable — while the sink's teardown drops redirects.
+        this.Spike.Dispose();
+
         this.Sink.Dispose();
         this.Clips.Dispose();
-        this.Penumbra.Clear();
+        this.Penumbra.ClearAll();
 
         Commands.RemoveHandler(CommandName);
 

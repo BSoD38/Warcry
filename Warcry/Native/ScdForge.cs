@@ -19,6 +19,9 @@ public sealed class ForgedClip
 
     public required float Seconds { get; init; }
 
+    /// <summary>Container size on disk — and in client memory once warmed.</summary>
+    public required int Bytes { get; init; }
+
     /// <summary>
     /// When the engine was first asked for this path, or 0 if it has not been.
     /// </summary>
@@ -94,11 +97,21 @@ public sealed class ScdForge
 
     private ScdWriter.Template? template;
 
+    /// <summary>
+    /// Latched when no template candidate could be loaded, so the failure is answered from
+    /// memory instead of re-reading five sqpack files on every call — Initialise is reached
+    /// once per cast and once per frame from the Settings tab.
+    /// </summary>
+    private bool templateLoadFailed;
+
     /// <summary>Set on unload so in-flight encodes stop touching Dalamud services and disk.</summary>
     private volatile bool shutDown;
 
+    private int lastStatusReady = -1;
+    private int lastStatusPending = -1;
+
     /// <summary>An encode that finished off-thread, waiting to be registered.</summary>
-    private sealed record Encoded(string VariantKey, string GamePath, string LocalPath, float Seconds);
+    private sealed record Encoded(string VariantKey, string GamePath, string LocalPath, float Seconds, int Bytes);
 
     public ScdForge(IDataManager data, IPluginLog log, PenumbraBridge penumbra, string configDirectory)
     {
@@ -157,6 +170,63 @@ public sealed class ScdForge
     /// <summary>Which game file the container is cloned from, for the Status tab.</summary>
     public string TemplatePath { get; private set; } = string.Empty;
 
+    /// <summary>Disk bytes across every registered container, and the warmed subset.</summary>
+    /// <remarks>Warmed bytes approximate resident client memory: a warmed resource handle
+    /// holds the whole container and cannot be evicted until the game exits.</remarks>
+    public (long Total, long Warmed) ByteTotals()
+    {
+        lock (this.gate)
+        {
+            long total = 0, warmed = 0;
+            foreach (var clip in this.byVariant.Values)
+            {
+                total += clip.Bytes;
+                if (clip.WarmedAt != 0)
+                {
+                    warmed += clip.Bytes;
+                }
+            }
+
+            return (total, warmed);
+        }
+    }
+
+    /// <summary>A cache read with no side effects — never starts an encode.</summary>
+    public bool TryGetForged(string variantKey, out ForgedClip? forged)
+    {
+        lock (this.gate)
+        {
+            return this.byVariant.TryGetValue(variantKey, out forged);
+        }
+    }
+
+    /// <summary>Whether a variant is currently encoding in the background.</summary>
+    public bool IsInFlight(string variantKey)
+    {
+        lock (this.gate)
+        {
+            return this.inFlight.Contains(variantKey);
+        }
+    }
+
+    /// <summary>Registered clips the engine has never been asked for. Snapshot.</summary>
+    public List<ForgedClip> UnwarmedClips()
+    {
+        lock (this.gate)
+        {
+            var cold = new List<ForgedClip>();
+            foreach (var clip in this.byVariant.Values)
+            {
+                if (clip.WarmedAt == 0)
+                {
+                    cold.Add(clip);
+                }
+            }
+
+            return cold;
+        }
+    }
+
     /// <summary>
     /// Loads the container template. Cheap to call repeatedly; only the first does work.
     /// </summary>
@@ -165,6 +235,11 @@ public sealed class ScdForge
         if (this.template is not null)
         {
             return this.Refresh();
+        }
+
+        if (this.templateLoadFailed)
+        {
+            return false;
         }
 
         foreach (var candidate in TemplateCandidates)
@@ -202,8 +277,9 @@ public sealed class ScdForge
         }
 
         this.template = null;
+        this.templateLoadFailed = true;
         this.Ready = false;
-        this.Status = "no battle-voice container could be read from the game files";
+        this.Status = "no battle-voice container could be read from the game files (latched — reload the plugin to retry)";
         return false;
     }
 
@@ -214,6 +290,7 @@ public sealed class ScdForge
         {
             this.Ready = false;
             this.Status = "no container template";
+            this.lastStatusReady = -1; // a failure message overwrote the ready line
             return false;
         }
 
@@ -221,6 +298,7 @@ public sealed class ScdForge
         {
             this.Ready = false;
             this.Status = "Penumbra is not installed or not loaded";
+            this.lastStatusReady = -1; // a failure message overwrote the ready line
             return false;
         }
 
@@ -232,9 +310,18 @@ public sealed class ScdForge
         }
 
         this.Ready = true;
-        this.Status = pending > 0
-            ? $"ready — {ready} clip(s) encoded, {pending} in progress"
-            : $"ready — {ready} clip(s) encoded from {this.TemplatePath}";
+
+        // Refresh is reached once per cast via NativeVoiceSink.Available; only rebuild
+        // the status string when the numbers actually moved.
+        if (ready != this.lastStatusReady || pending != this.lastStatusPending)
+        {
+            this.lastStatusReady = ready;
+            this.lastStatusPending = pending;
+            this.Status = pending > 0
+                ? $"ready — {ready} clip(s) encoded, {pending} in progress"
+                : $"ready — {ready} clip(s) encoded from {this.TemplatePath}";
+        }
+
         return true;
     }
 
@@ -343,7 +430,7 @@ public sealed class ScdForge
                 File.WriteAllBytes(localPath, scd);
 
                 this.completed.Enqueue(
-                    new Encoded(variantKey, $"sound/vfx/warcry/clip/{name}.scd", localPath, seconds));
+                    new Encoded(variantKey, $"sound/vfx/warcry/clip/{name}.scd", localPath, seconds, scd.Length));
 
                 this.log.Information(
                     "ScdForge: encoded {Key} ({Bytes} bytes, {Seconds:0.00}s); {Certainty}",
@@ -399,13 +486,14 @@ public sealed class ScdForge
 
         // AddTemporaryModAll replaces the whole set for our tag, so the entire dictionary
         // goes every time rather than just the new entries.
-        var code = this.penumbra.Redirect(new Dictionary<string, string>(this.redirects));
+        var code = this.penumbra.Redirect(PenumbraBridge.ClipsTag, new Dictionary<string, string>(this.redirects));
 
-        if (code is null)
+        if (code is null || code.Value != 0)
         {
-            // Registration never happened, so the engine cannot reach these files. Roll
-            // them back rather than cache them: a cached entry the game cannot load would
-            // be silently unplayable for the rest of the session.
+            // Registration did not take — the IPC call failed outright, or Penumbra
+            // answered with an error code. Either way the redirect may not be in force,
+            // and a cached entry the game cannot load would be silently unplayable for
+            // the rest of the session. Roll back and retry on a later pump.
             foreach (var item in this.pendingRegistration)
             {
                 this.redirects.Remove(item.GamePath);
@@ -414,19 +502,14 @@ public sealed class ScdForge
             this.log.Error(
                 "ScdForge: could not register {Count} redirect(s) ({Error}); they will be retried",
                 this.pendingRegistration.Count,
-                this.penumbra.LastError);
+                code is null ? this.penumbra.LastError : $"Penumbra returned {code.Value}");
 
+            // Dropped, not re-queued: the variant is now neither cached nor in flight, so
+            // the next request for it re-encodes and re-registers — a retry that is paced
+            // by the throttle instead of hammering a failing IPC once per frame.
             this.pendingRegistration.Clear();
             this.Refresh();
             return [];
-        }
-
-        if (code.Value != 0)
-        {
-            this.log.Warning(
-                "ScdForge: Penumbra returned {Code} registering {Count} redirect(s)",
-                code.Value,
-                this.redirects.Count);
         }
 
         var registered = new List<ForgedClip>(this.pendingRegistration.Count);
@@ -441,6 +524,7 @@ public sealed class ScdForge
                     GamePath = item.GamePath,
                     LocalPath = item.LocalPath,
                     Seconds = item.Seconds,
+                    Bytes = item.Bytes,
                 };
 
                 this.byVariant[item.VariantKey] = clip;
@@ -498,7 +582,7 @@ public sealed class ScdForge
         this.redirects.Clear();
         this.pendingRegistration.Clear();
         this.completed.Clear();
-        this.penumbra.Clear();
+        this.penumbra.Clear(PenumbraBridge.ClipsTag);
         this.Refresh();
     }
 }

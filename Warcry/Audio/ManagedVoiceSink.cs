@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using Dalamud.Plugin.Services;
 using Dalamud.Utility;
 using NAudio.Wave;
@@ -27,6 +28,14 @@ public sealed class ManagedVoiceSink : IVoiceSink
 
     private IWavePlayer? output;
     private MixingSampleProvider? mixer;
+
+    /// <summary>
+    /// Interlocked only: incremented on the game thread in <see cref="TryPlay"/>,
+    /// decremented on NAudio's output thread in <see cref="OnInputEnded"/>
+    /// (MixerInputEnded is raised from inside MixingSampleProvider.Read). A plain
+    /// <c>++</c>/<c>--</c> pair here loses updates, and a lost decrement is permanent —
+    /// enough of them and the cap check refuses every line for the rest of the session.
+    /// </summary>
     private int activeVoices;
 
     public ManagedVoiceSink(IPluginLog log, GameVolume volume, Configuration config)
@@ -69,7 +78,7 @@ public sealed class ManagedVoiceSink : IVoiceSink
 
     public bool Available { get; private set; }
 
-    public int ActiveVoices => this.activeVoices;
+    public int ActiveVoices => Volatile.Read(ref this.activeVoices);
 
     public bool TryPlay(in VoiceRequest request)
     {
@@ -78,7 +87,7 @@ public sealed class ManagedVoiceSink : IVoiceSink
             return false;
         }
 
-        if (this.activeVoices >= this.config.MaxConcurrent)
+        if (Volatile.Read(ref this.activeVoices) >= this.config.MaxConcurrent)
         {
             // Hard cap. Not a taste call: the game's SoundData pool is 256 entries shared
             // with the whole client, and the Voice bus has only 5 tracks.
@@ -97,7 +106,7 @@ public sealed class ManagedVoiceSink : IVoiceSink
         try
         {
             // mono -> gain -> pan -> stereo, matching the mixer's format.
-            var volumeStage = new VolumeSampleProvider(request.CreateSource())
+            var volumeStage = new VolumeSampleProvider(request.CreateSource(request.Speed))
             {
                 Volume = Math.Clamp(gain, 0f, 2f),
             };
@@ -109,7 +118,7 @@ public sealed class ManagedVoiceSink : IVoiceSink
             };
 
             this.mixer.AddMixerInput(panStage);
-            this.activeVoices++;
+            Interlocked.Increment(ref this.activeVoices);
             return true;
         }
         catch (Exception ex)
@@ -126,10 +135,18 @@ public sealed class ManagedVoiceSink : IVoiceSink
 
     private void OnInputEnded(object? sender, SampleProviderEventArgs e)
     {
-        if (this.activeVoices > 0)
+        // Decrement with a floor at zero. A plain Interlocked.Decrement could go negative
+        // if the mixer ever raises the event for an input we did not count.
+        int current;
+        do
         {
-            this.activeVoices--;
+            current = Volatile.Read(ref this.activeVoices);
+            if (current <= 0)
+            {
+                return;
+            }
         }
+        while (Interlocked.CompareExchange(ref this.activeVoices, current - 1, current) != current);
     }
 
     private static bool SafeIsWine()
