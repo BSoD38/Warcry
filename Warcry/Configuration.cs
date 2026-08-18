@@ -54,16 +54,15 @@ public sealed class Configuration : IPluginConfiguration
     /// Which sink gameplay lines are routed to. See <see cref="SinkMode"/>.
     /// </summary>
     /// <remarks>
-    /// <para>Defaults to <see cref="SinkMode.ManagedOnly"/> until PLAN.md §6 (b)–(e) have
-    /// been checked in game: the native path is proven to <em>play</em>, but its behaviour
-    /// against the Master and Voice sliders, its positional attenuation, and its behaviour
-    /// under sustained load have never been measured. The Sound pack tab's checklist is
-    /// how they get measured.</para>
+    /// <para>Defaults to <see cref="SinkMode.Auto"/>: the engine when Penumbra is present,
+    /// NAudio otherwise, so a fresh install is never silent. The earlier ManagedOnly
+    /// default existed only because PLAN.md §6 (b)–(e) were unmeasured; the Sound pack
+    /// checklist passed all of them (and the speed argument) in game on 2026-08-18.</para>
     /// <para><see cref="SinkMode.NativeOnly"/> and <see cref="SinkMode.Auto"/> require
     /// Penumbra. NativeOnly never substitutes NAudio — a refused line is a counted,
     /// explained drop.</para>
     /// </remarks>
-    public SinkMode Sink { get; set; } = SinkMode.ManagedOnly;
+    public SinkMode Sink { get; set; } = SinkMode.Auto;
 
     /// <summary>
     /// v1 field, superseded by <see cref="Sink"/>. Kept only so old configs deserialise;
@@ -79,10 +78,10 @@ public sealed class Configuration : IPluginConfiguration
     /// <para>On, random pitch is free: one encoded variant per clip, and every roll rides
     /// on the call. Off, rolled rates are snapped to half-semitone steps and each step is
     /// its own encoded variant.</para>
-    /// <para>⚠ That the engine honours the speed argument on our containers is checklist
-    /// item (f) on the Sound pack tab — the game passes non-1 speeds for its own sounds,
-    /// but ours have never been measured. Turn this off if pitched mappings sound wrong
-    /// in native mode.</para>
+    /// <para>Checklist item (f) confirmed in game (2026-08-18) that the engine honours the
+    /// speed argument on our containers. The toggle stays as the escape hatch in case a
+    /// game patch changes that — turn it off if pitched mappings sound wrong in native
+    /// mode, and re-run the checklist.</para>
     /// </remarks>
     public bool NativePitchViaSpeed { get; set; } = true;
 

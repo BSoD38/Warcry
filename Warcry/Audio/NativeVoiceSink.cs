@@ -24,9 +24,10 @@ namespace Warcry.Audio;
 /// request for a newly forged path returns before the bytes are in memory. That first play
 /// is used as the warm-up and reported as a refusal, which lets a composite fall back to the
 /// managed sink for exactly one line rather than dropping it.</para>
-/// <para>Verified end to end in <c>docs/native-spike.md</c>. Not yet verified: behaviour
-/// against the Master and Voice sliders, positional attenuation, and sustained load —
-/// PLAN.md §6 (b)–(e). That is why this is opt-in.</para>
+/// <para>Verified end to end in <c>docs/native-spike.md</c>, including PLAN.md §6
+/// (b)–(e) — volume sliders, positional attenuation, sustained load — and the speed
+/// argument, all passed in game on 2026-08-18 via the Sound pack checklist. Re-run the
+/// checklist after a game patch or FFXIVClientStructs bump.</para>
 /// </remarks>
 public sealed unsafe class NativeVoiceSink : IVoiceSink
 {

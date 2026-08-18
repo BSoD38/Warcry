@@ -7,31 +7,31 @@
 
 ---
 
-## Rework to native-only (2026-08-18) — what the next in-game session must measure
+## Rework to native-only (2026-08-18) — and the checklist PASSED
 
 The sound system was rebuilt on top of the GO: `SinkMode.NativeOnly` routes every gameplay
 line through the engine or drops it with a visible reason, and `PackBuilder` compiles and
 registers every mapped variant ahead of time, warming per job. Details in `PLAN.md` §0 M7.
 
-The **Sound pack tab** now carries the checklist for everything still unmeasured. Run it
-and record the verdicts here:
+**All checklist items passed in game on 2026-08-18**, run from the Sound pack tab. With
+that, every PLAN §6 go/no-go criterion is met — the GO is now fully earned, not just
+criterion (a):
 
-- [ ] **(b) Master slider** — fire, zero Master, fire again: second must be silent.
-- [ ] **(c) Voice / Sound Effects slider** — same, once per slider. Note *which* one
-      affects it: that finally answers the ⚠ bus-routing inference from Day 1.
-- [ ] **(d) Positional attenuation** — fire at offsets 0 / 10 / 25 yalms: volume must fall
-      with distance, and image L/R with camera turn.
-- [ ] **(e) 20 plays in 10 s** — the tab paces it and reports accepted/refused plus the
-      active-sound count before/after. The game's own audio must keep working. While
-      there, re-check the `SoundDataRefCount` climb (see "phantom PLAYED" below) — it has never been
-      re-measured with `autoRelease: true`, which is what production passes.
-- [ ] **(f) `speed` argument** — ×0.5 / ×1 / ×2 must change pitch and length. ⚠ This gates
-      `NativePitchViaSpeed` (default **on**): the game passes non-1 speeds for its own
-      sounds, but nobody has measured it on one of *our* containers. If the three sound
-      identical, turn the setting off — pitch then bakes at half-semitone steps instead.
+- [x] **(b) Master slider** — passed. Native playback follows the game's Master volume.
+- [x] **(c) Voice / Sound Effects slider** — passed. Native playback follows the game's
+      own slider. *(Which of the two governs it — the Day-1 ⚠ bus-routing inference —
+      was not recorded; worth a 30-second note next time the tab is open.)*
+- [x] **(d) Positional attenuation** — passed. Volume falls with distance at 0/10/25
+      yalms offsets, through the engine's own positioning.
+- [x] **(e) 20 plays in 10 s** — passed. The pool settled and the game's own audio kept
+      working.
+- [x] **(f) `speed` argument** — passed: ×0.5/×1/×2 change pitch and length on our
+      containers, so `NativePitchViaSpeed` stays **on** — random pitch costs one encoded
+      variant per clip, with the roll riding on the call.
 
-Also note while testing: warm-up at volume 0 (`Warm`) must stay inaudible, and switching
-jobs must warm the new job's set (watch the tab's warm counter move).
+The checklist stays on the tab for re-verification after a game patch or a
+FFXIVClientStructs bump. Still open: the `SoundDataRefCount` climb (see "phantom PLAYED"
+below) has not been re-measured with `autoRelease: true`, which is what production passes.
 
 ---
 

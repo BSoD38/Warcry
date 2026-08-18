@@ -113,10 +113,10 @@ public sealed partial class MainWindow
         ImGui.Separator();
         ImGui.TextUnformatted("Verification — PLAN §6 (b)–(e), plus the speed argument");
         ImGui.TextWrapped(
-            "The native path is proven to play; these are the behaviours that have never been " +
-            "measured. Every button below plays the test tone STRAIGHT THROUGH THE NATIVE SINK, " +
-            "whatever the sink mode — the first press may refuse while it encodes and warms; " +
-            "press again. Record each verdict here and copy the results into docs/native-spike.md.");
+            "All five passed in game on 2026-08-18 (recorded in docs/native-spike.md). Kept for " +
+            "re-verification after a game patch or FFXIVClientStructs bump. Every button below " +
+            "plays the test tone STRAIGHT THROUGH THE NATIVE SINK, whatever the sink mode — the " +
+            "first press may refuse while it encodes and warms; press again.");
 
         if (this.lastFireResult.Length > 0)
         {
