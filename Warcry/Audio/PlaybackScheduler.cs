@@ -4,6 +4,23 @@ using System.Diagnostics;
 
 namespace Warcry.Audio;
 
+/// <summary>Why <see cref="PlaybackScheduler.Schedule"/> did not take a request.</summary>
+/// <remarks>
+/// Distinct from <c>DropStage</c> on purpose: the scheduler lives below the diagnostics
+/// layer and must not depend on it. The caller maps these onto a stage.
+/// </remarks>
+public enum ScheduleRefusal : byte
+{
+    /// <summary>Dispatched, or queued for dispatch.</summary>
+    None = 0,
+
+    /// <summary>Dispatched immediately and every sink refused it.</summary>
+    SinkRefused = 1,
+
+    /// <summary>The cast bar had further to run than a line will be held for.</summary>
+    TooFarOut = 2,
+}
+
 /// <summary>
 /// Holds a voice back until the cast bar has actually finished.
 /// </summary>
@@ -22,6 +39,12 @@ namespace Warcry.Audio;
 public sealed class PlaybackScheduler
 {
     /// <summary>Anything further out than this is a bug, not a cast. Refuse it.</summary>
+    /// <remarks>
+    /// A backstop, and one nothing should reach: <c>CastEvent.CastRemaining</c> already
+    /// caps itself at one slidecast window, so a delay of seconds means an offset was
+    /// computed from a cast bar that is not this action's. Reaching it is a signal, which
+    /// is why <see cref="TooFarOut"/> counts it rather than returning silently.
+    /// </remarks>
     private const float MaxDelaySeconds = 5f;
 
     private readonly struct Pending
@@ -60,33 +83,52 @@ public sealed class PlaybackScheduler
     /// <summary>Requests every sink refused at dispatch time.</summary>
     public long Refused { get; private set; }
 
+    /// <summary>Requests whose cast bar ran past <see cref="MaxDelaySeconds"/>.</summary>
+    /// <remarks>
+    /// Its own counter so the Status tab's totals reconcile. This path used to return
+    /// without counting anything, which left an event that was neither dispatched, nor
+    /// refused, nor cancelled, nor pending — exactly the invisible drop the rest of the
+    /// pipeline was rebuilt to eliminate.
+    /// </remarks>
+    public long TooFarOut { get; private set; }
+
     public long Cancelled { get; private set; }
 
     /// <summary>
     /// Play now, or after <paramref name="delaySeconds"/>. A delay of zero dispatches
     /// immediately rather than waiting a frame — instants must never be delayed.
     /// </summary>
-    public bool Schedule(in VoiceRequest request, float delaySeconds)
+    /// <param name="refusal">
+    /// Why the request was not taken, or <see cref="ScheduleRefusal.None"/>. The caller
+    /// needs this to attribute the drop: a delay past the ceiling is a scheduler policy
+    /// decision, and reporting it as a sink refusal sent debugging to the wrong tab.
+    /// </param>
+    public bool Schedule(in VoiceRequest request, float delaySeconds, out ScheduleRefusal refusal)
     {
         if (delaySeconds <= 0f)
         {
             if (this.sink.TryPlay(in request))
             {
                 this.Dispatched++;
+                refusal = ScheduleRefusal.None;
                 return true;
             }
 
             this.Refused++;
+            refusal = ScheduleRefusal.SinkRefused;
             return false;
         }
 
         if (delaySeconds > MaxDelaySeconds)
         {
+            this.TooFarOut++;
+            refusal = ScheduleRefusal.TooFarOut;
             return false;
         }
 
         var due = Stopwatch.GetTimestamp() + (long)(delaySeconds * Stopwatch.Frequency);
         this.pending.Add(new Pending(in request, due));
+        refusal = ScheduleRefusal.None;
         return true;
     }
 

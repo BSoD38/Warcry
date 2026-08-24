@@ -64,7 +64,10 @@ public sealed partial class MainWindow
         {
             if (lib.Count == 0)
             {
-                ImGui.TextDisabled("No clips yet. Import a wav or ogg, then use an action.");
+                // First run lands here, so this is where the plugin explains itself.
+                ImGui.TextDisabled("No clips yet.");
+                ImGui.TextDisabled("Import a wav or ogg above, then go to the Actions tab to");
+                ImGui.TextDisabled("choose which of your actions plays it.");
             }
 
             foreach (var clip in lib.Clips.ToArray())

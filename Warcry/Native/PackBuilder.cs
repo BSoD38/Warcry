@@ -188,14 +188,18 @@ public sealed class PackBuilder
                 continue;
             }
 
-            if (!this.clips.TryGet(entry.ClipHash, out var cached) && entry.ClipHash.Length > 0)
+            // The test tone synthesises itself and has no library entry; everything else
+            // needs a decoded clip. Keyed off the variant, not off an empty hash, so a
+            // malformed mapping cannot slip past into a null dereference downstream.
+            var synthetic = entry.VariantKey == Plugin.TestToneKey;
+            if (!this.clips.TryGet(entry.ClipHash, out var cached) && !synthetic)
             {
                 entry.Error = "clip not loaded (still decoding, or missing from the library)";
                 missing++;
                 continue;
             }
 
-            var factory = this.FactoryFor(entry, cached!);
+            var factory = this.FactoryFor(entry, cached);
             if (this.forge.TryForge(key, factory, out _))
             {
                 ready++;
@@ -203,6 +207,13 @@ public sealed class PackBuilder
             else if (this.forge.IsInFlight(key))
             {
                 started++;
+            }
+            else if (this.forge.TryGetFailure(key, out var why))
+            {
+                // Terminal: an earlier encode gave up on it. Naming the reason here is
+                // what stops it reading as "not compiled — press Apply" forever.
+                entry.Error = why;
+                missing++;
             }
             else
             {
@@ -214,7 +225,7 @@ public sealed class PackBuilder
 
         this.LastApplyAt = Stopwatch.GetTimestamp();
         this.Status = missing > 0
-            ? $"{ready} ready, {started} encoding, {missing} blocked — see the list below"
+            ? $"{ready} ready, {started} being prepared, {missing} blocked. See the list below"
             : started > 0
                 ? $"{ready} ready, {started} encoding"
                 : $"{ready} ready";
@@ -375,8 +386,15 @@ public sealed class PackBuilder
                     foreach (var rate in BakedRatesFor(rule))
                     {
                         var key = Plugin.VariantKey(clipRef.Hash, rate, rule.PitchMode, rule.PitchFftSize);
-                        if (this.plan.ContainsKey(key))
+                        if (this.plan.TryGetValue(key, out var already))
                         {
+                            // Two rules can reach the identical rendering — the same clip at
+                            // the same pitch, reached once by action id and once by category.
+                            // Skipping outright kept only the FIRST rule's action set, so the
+                            // variant looked unreachable from any job the second rule covers
+                            // and never warmed: one dropped line per job switch, from the very
+                            // component that exists to prevent that.
+                            Widen(already, rule.When.ActionIds);
                             continue;
                         }
 
@@ -425,6 +443,31 @@ public sealed class PackBuilder
                 $"{this.plan.Count} variants planned but the forge holds at most {ScdForge.MaxVariants} — " +
                 "reduce mappings or pitch spreads, or the overflow will never compile");
         }
+
+        // Reachability is a union over every rule that can request the rendering. An empty
+        // action set means job-agnostic and therefore always reachable, so it has to win
+        // over any specific list rather than being merged into one.
+        static void Widen(PlannedVariant entry, List<uint> actionIds)
+        {
+            if (entry.ActionIds.Count == 0)
+            {
+                return;
+            }
+
+            if (actionIds.Count == 0)
+            {
+                entry.ActionIds.Clear();
+                return;
+            }
+
+            foreach (var id in actionIds)
+            {
+                if (!entry.ActionIds.Contains(id))
+                {
+                    entry.ActionIds.Add(id);
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -460,12 +503,14 @@ public sealed class PackBuilder
         }
     }
 
-    private Func<NAudio.Wave.ISampleProvider> FactoryFor(PlannedVariant entry, CachedClip cached)
+    private Func<NAudio.Wave.ISampleProvider> FactoryFor(PlannedVariant entry, CachedClip? cached)
     {
         if (entry.VariantKey == Plugin.TestToneKey)
         {
             return static () => new TestTone();
         }
+
+        ArgumentNullException.ThrowIfNull(cached);
 
         // Reconstruct the baked parameters from the plan rather than the key string.
         // The key is derived from these same values, so they cannot disagree.

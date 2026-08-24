@@ -29,6 +29,17 @@ public enum DropStage : byte
     /// so the Events tab said "ok" for a line that never sounded.
     /// </remarks>
     PlaybackOff = 8,
+
+    /// <summary>
+    /// The cast bar had further to run than the scheduler will hold a line for, so the
+    /// line was refused rather than fired into a fight that had moved on.
+    /// </summary>
+    /// <remarks>
+    /// Its own stage rather than <see cref="SinkRefused"/>: no sink was ever asked. Folding
+    /// the two together pointed anyone debugging a long cast at the audio path instead of
+    /// at the delay ceiling.
+    /// </remarks>
+    TooFarOut = 9,
 }
 
 public readonly struct DiagRow

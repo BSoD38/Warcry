@@ -206,10 +206,11 @@ public static class MsAdPcm
     /// SubInfo block: 18 bytes of format plus 32 bytes of ADPCM extra, 50 total.
     /// </summary>
     /// <remarks>
-    /// ⚠ Authored from the documented Microsoft layout rather than copied from a game file.
-    /// The prediction to check is that real MS-ADPCM entries report <c>SubInfoSize = 0x32</c>
-    /// (50). If they do not, dump one and copy it instead — templating from a real file has
-    /// been the only reliable technique with this format.
+    /// Authored from the documented Microsoft layout rather than copied from a game file,
+    /// which was the open risk here — but the engine has since played containers carrying
+    /// this exact header, verified in game on 2026-08-18 (see <c>docs/native-spike.md</c>),
+    /// so the 50-byte <c>SubInfoSize = 0x32</c> shape is confirmed accepted. Re-check after
+    /// a game patch, like everything else on the native path.
     /// </remarks>
     public static byte[] BuildCodecHeader(int channels, int sampleRate, int blockAlign)
     {

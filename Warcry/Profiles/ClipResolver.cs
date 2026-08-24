@@ -27,6 +27,18 @@ public sealed class ClipResolver
     /// <summary>Last clip played per (caster, rule), so a variant never repeats back to back.</summary>
     private readonly Dictionary<(CasterKey Caster, string RuleId), string> lastClip = [];
 
+    /// <summary>
+    /// Ceiling on remembered (caster, rule) pairs.
+    /// </summary>
+    /// <remarks>
+    /// One entry per caster per rule they have triggered. Bounded at one caster in v1, but
+    /// unbounded the moment remote players arrive — a raid night's worth of strangers would
+    /// accumulate for the session with nothing but an explicit
+    /// <see cref="ClearCaches"/> to reclaim it. Forgetting is cheap: the only cost is that
+    /// one clip may repeat once.
+    /// </remarks>
+    private const int MaxRememberedPicks = 4096;
+
     private ulong rng = 0x243F6A8885A308D3;
 
     public ClipResolver(ProfileStore profiles, IDataManager data)
@@ -177,7 +189,7 @@ public sealed class ClipResolver
             // Recorded even though there is nothing to avoid yet: the moment a second
             // clip is added to the rule, "don't repeat what just played" must already
             // know what just played.
-            this.lastClip[(caster, rule.Id)] = rule.Clips[0].Hash;
+            this.Remember(in caster, rule.Id, rule.Clips[0].Hash);
             return rule.Clips[0];
         }
 
@@ -195,7 +207,7 @@ public sealed class ClipResolver
         if (total <= 0)
         {
             // Every clip in the rule shares the previous pick's hash (duplicated entries).
-            this.lastClip[(caster, rule.Id)] = rule.Clips[0].Hash;
+            this.Remember(in caster, rule.Id, rule.Clips[0].Hash);
             return rule.Clips[0];
         }
 
@@ -211,15 +223,31 @@ public sealed class ClipResolver
             roll -= Math.Max(1, c.Weight);
             if (roll < 0)
             {
-                this.lastClip[(caster, rule.Id)] = c.Hash;
+                this.Remember(in caster, rule.Id, c.Hash);
                 return c;
             }
         }
 
         // Unreachable while the roll is bounded by the summed weights, but if it is ever
         // reached the fallback still has to count as the previous pick.
-        this.lastClip[(caster, rule.Id)] = rule.Clips[0].Hash;
+        this.Remember(in caster, rule.Id, rule.Clips[0].Hash);
         return rule.Clips[0];
+    }
+
+    /// <summary>Records what just played for this (caster, rule), within a fixed bound.</summary>
+    private void Remember(in CasterKey caster, string ruleId, string hash)
+    {
+        var key = (caster, ruleId);
+
+        // Dropping the whole table is the right trade against tracking an eviction order
+        // on the cast path. Overwriting an existing key is always free, so this only ever
+        // trips when a genuinely new pair arrives at the ceiling.
+        if (this.lastClip.Count >= MaxRememberedPicks && !this.lastClip.ContainsKey(key))
+        {
+            this.lastClip.Clear();
+        }
+
+        this.lastClip[key] = hash;
     }
 
     public void ClearCaches()

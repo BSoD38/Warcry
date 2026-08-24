@@ -128,7 +128,7 @@ public sealed class Plugin : IDalamudPlugin
         this.Composite = new CompositeVoiceSink(
             Log,
             this.Config,
-            new NativeVoiceSink(Log, this.Config, this.Forge),
+            new NativeVoiceSink(Log, this.Config, this.Forge, new CasterLocator(Objects)),
             new ManagedVoiceSink(Log, this.Volume, this.Config));
 
         this.Jobs = new JobIndex(Data);
@@ -282,17 +282,20 @@ public sealed class Plugin : IDalamudPlugin
         // and this dispatches immediately. Only real casts get held back, by exactly the
         // amount their own bar has left to run.
         var delay = this.Config.WaitForCastToFinish ? ev.CastRemaining : 0f;
-        if (this.Scheduler.Schedule(in request, delay))
+        if (this.Scheduler.Schedule(in request, delay, out var refusal))
         {
             // Stamped on success only, so an unmapped action does not eat the window.
             this.Throttle.Mark(ev.CasterEntityId);
         }
         else
         {
-            // Every sink refused: at the concurrency cap, muted by the game's own sliders,
-            // or no output device. Previously invisible — the row read "ok" and nothing
-            // came out of the speakers.
-            this.Diag.Drop(DropStage.SinkRefused);
+            // SinkRefused: every sink said no — at the concurrency cap, muted by the game's
+            // own sliders, or no output device. TooFarOut: no sink was asked at all, because
+            // the cast bar ran past the scheduler's ceiling. Both were previously invisible
+            // — the row read "ok" and nothing came out of the speakers.
+            this.Diag.Drop(refusal == ScheduleRefusal.TooFarOut
+                ? DropStage.TooFarOut
+                : DropStage.SinkRefused);
         }
     }
 
@@ -339,8 +342,10 @@ public sealed class Plugin : IDalamudPlugin
     // NOTE: Action<uint> at API 15 — this was Action<ushort> in older Dalamud.
     private void OnTerritoryChanged(uint territory)
     {
-        // A voiceline arriving after a loading screen is worse than none at all.
+        // A voiceline arriving after a loading screen is worse than none at all — and a
+        // voice still sounding through one is holding a slot in the game's shared pool.
         this.Scheduler.CancelAll();
+        this.Sink.StopAll();
         this.Throttle.Clear();
     }
 
@@ -374,19 +379,19 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (!this.Config.Enabled)
         {
-            return "\"Warcry enabled\" is off, on the Settings tab. Nothing is detected or played.";
+            return "\"Warcry enabled\" is off. Nothing is detected or played.";
         }
 
         if (!this.Config.PlayTestToneOnActions)
         {
-            return "\"Play clips on my actions\" is off, on the Settings tab. Actions are still " +
-                   "detected — the Events tab keeps filling — but nothing is played.";
+            return "\"Play voicelines\" is off. Actions are still detected, and the Events tab " +
+                   "keeps filling, but nothing is played.";
         }
 
         if (!this.Watcher.Installed)
         {
             return "The action hook did not install, so no action is ever detected. Expected " +
-                   "after a game patch; wait for a FFXIVClientStructs update.";
+                   "after a game patch. Wait for a FFXIVClientStructs update.";
         }
 
         if (!this.Sink.Available)
@@ -400,18 +405,18 @@ public sealed class Plugin : IDalamudPlugin
             var bus = this.Config.UseVoiceSliderNotSe ? "Voice" : "Sound Effects";
             return $"The game's own volume settings multiply out to zero (Master {this.Volume.Master}, " +
                    $"{bus} {(this.Config.UseVoiceSliderNotSe ? this.Volume.Voice : this.Volume.Se)}, " +
-                   $"Player {this.Volume.Player}) — or one of them is muted.";
+                   $"Player {this.Volume.Player}), or one of them is muted.";
         }
 
         if (this.Config.MasterGain <= 0.0001f)
         {
-            return "Plugin volume is at zero, on the Settings tab.";
+            return "\"Warcry volume\" is at zero.";
         }
 
         if (this.Gates.IsSuppressed())
         {
             return $"Playback is gated right now: {this.Gates.Reason}. That is a live condition, " +
-                   "not a setting — it will clear on its own.";
+                   "not a setting, and it will clear on its own.";
         }
 
         if (this.Clips.Count == 0)
@@ -436,7 +441,7 @@ public sealed class Plugin : IDalamudPlugin
 
         if (rules == 0)
         {
-            return "No enabled mapping has a clip attached. Use the Mappings tab.";
+            return "No enabled mapping has a clip attached. Use the Actions tab.";
         }
 
         // Nothing is blocking as a matter of configuration, so point at the counters, which
@@ -447,22 +452,23 @@ public sealed class Plugin : IDalamudPlugin
 
         if (noClip > 0 && noClip >= throttled && noClip >= sinkRefused)
         {
-            return $"Nothing is blocking playback, but {noClip} event(s) resolved to no clip — " +
-                   "the actions you are using are not the ones your mappings cover. The Events " +
-                   "tab shows the ActionId that actually fired.";
+            return $"Nothing is blocking playback, but {noClip} action(s) had no clip mapped to " +
+                   "them. The actions you are using are not the ones your mappings cover. The " +
+                   "Events tab shows which action id actually fired.";
         }
 
         if (throttled > 0 && throttled >= sinkRefused)
         {
-            return $"Nothing is blocking playback, but {throttled} event(s) were throttled — " +
-                   "cooldown, auto-attack skip, casts-only, or a muted action.";
+            return $"Nothing is blocking playback, but {throttled} action(s) were skipped for " +
+                   "coming too soon after the previous line, or for being an auto-attack, an " +
+                   "instant while \"only actions with a cast bar\" is on, or a muted action.";
         }
 
         if (sinkRefused > 0)
         {
             var reason = this.Composite.LastRefusal;
-            return $"Nothing is blocking playback, but {sinkRefused} event(s) were refused by the " +
-                   $"sink{(reason.Length > 0 ? $" — last reason: {reason}" : " — usually the \"max at once\" cap")}.";
+            return $"Nothing is blocking playback, but {sinkRefused} line(s) could not be played" +
+                   $"{(reason.Length > 0 ? $", the last one because {reason}" : ", usually because too many were already playing at once")}.";
         }
 
         return string.Empty;
@@ -513,7 +519,7 @@ public sealed class Plugin : IDalamudPlugin
             gain: 1f,
             casterEntityId: PlayerState.EntityId);
 
-        if (!this.Scheduler.Schedule(in request, 0f))
+        if (!this.Scheduler.Schedule(in request, 0f, out _))
         {
             Log.Warning("Test tone refused — sink unavailable, muted, or at the concurrency cap.");
         }

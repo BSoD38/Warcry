@@ -77,16 +77,41 @@ public sealed class Throttle
     }
 
     /// <summary>Drop entries older than a minute so the dictionary cannot grow unbounded.</summary>
+    /// <remarks>
+    /// The age sweep alone is not a bound. With more than <see cref="MaxTrackedCasters"/>
+    /// casters all active inside the window it frees nothing, and then runs in full on every
+    /// single <see cref="Mark"/> — an allocating scan per cast, growing as the crowd grows.
+    /// So when the sweep comes up empty, evict the oldest entry outright: it is the one whose
+    /// cooldown has least left to run, and dropping it costs at most one repeated line.
+    /// </remarks>
     private void Reap()
     {
         var cutoff = Stopwatch.GetTimestamp() - (Stopwatch.Frequency * 60);
         var stale = new List<uint>();
+        var oldestId = 0u;
+        var oldestTicks = long.MaxValue;
+
         foreach (var (id, ticks) in this.lastPlayTicks)
         {
             if (ticks < cutoff)
             {
                 stale.Add(id);
             }
+            else if (ticks < oldestTicks)
+            {
+                oldestTicks = ticks;
+                oldestId = id;
+            }
+        }
+
+        if (stale.Count == 0)
+        {
+            if (oldestTicks != long.MaxValue)
+            {
+                this.lastPlayTicks.Remove(oldestId);
+            }
+
+            return;
         }
 
         foreach (var id in stale)

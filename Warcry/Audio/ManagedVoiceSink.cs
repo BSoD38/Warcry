@@ -4,6 +4,7 @@ using Dalamud.Plugin.Services;
 using Dalamud.Utility;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
+using Warcry.Clips;
 
 namespace Warcry.Audio;
 
@@ -46,7 +47,11 @@ public sealed class ManagedVoiceSink : IVoiceSink
 
         try
         {
-            var format = WaveFormat.CreateIeeeFloatWaveFormat(TestTone.SampleRate, 2);
+            // ClipLibrary's rate, not TestTone's: the mixer serves the clip pipeline, and
+            // every provider it will be handed is built at ClipLibrary.SampleRate. The two
+            // constants agree today, but a mismatch would throw inside AddMixerInput on
+            // every single line and present as plain silence.
+            var format = WaveFormat.CreateIeeeFloatWaveFormat(ClipLibrary.SampleRate, 2);
             this.mixer = new MixingSampleProvider(format) { ReadFully = true };
             this.mixer.MixerInputEnded += this.OnInputEnded;
 
@@ -59,7 +64,7 @@ public sealed class ManagedVoiceSink : IVoiceSink
             this.output.Play();
 
             this.Status = wine
-                ? "Managed (NAudio / DirectSound — Wine detected)"
+                ? "Managed (NAudio / DirectSound, Wine detected)"
                 : "Managed (NAudio / WaveOut)";
             this.Available = true;
             log.Information("ManagedVoiceSink ready: {Status}", this.Status);
@@ -80,10 +85,22 @@ public sealed class ManagedVoiceSink : IVoiceSink
 
     public int ActiveVoices => Volatile.Read(ref this.activeVoices);
 
+    /// <summary>
+    /// Why the last request was not played, or empty if it was.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors <see cref="NativeVoiceSink.LastRefusal"/>, and for the same reason. Without
+    /// it the router had nothing to report but <see cref="Status"/> — the output device's
+    /// name — so "why did nothing play" answered itself with "Managed (NAudio / WaveOut)".
+    /// Three quite different causes were collapsed into one non-answer.
+    /// </remarks>
+    public string LastRefusal { get; private set; } = string.Empty;
+
     public bool TryPlay(in VoiceRequest request)
     {
         if (!this.Available || this.mixer is null)
         {
+            this.LastRefusal = this.Status;
             return false;
         }
 
@@ -91,6 +108,7 @@ public sealed class ManagedVoiceSink : IVoiceSink
         {
             // Hard cap. Not a taste call: the game's SoundData pool is 256 entries shared
             // with the whole client, and the Voice bus has only 5 tracks.
+            this.LastRefusal = $"at the concurrency cap ({this.config.MaxConcurrent})";
             return false;
         }
 
@@ -100,6 +118,9 @@ public sealed class ManagedVoiceSink : IVoiceSink
         if (gain <= 0.0001f)
         {
             // Muted, or the sliders multiply out to silence. Don't burn a voice slot.
+            this.LastRefusal = gameGain <= 0.0001f
+                ? "the game's own volume settings multiply out to zero, or a channel is muted"
+                : "the gain for this line is zero (plugin volume, or the rule's own gain)";
             return false;
         }
 
@@ -119,10 +140,12 @@ public sealed class ManagedVoiceSink : IVoiceSink
 
             this.mixer.AddMixerInput(panStage);
             Interlocked.Increment(ref this.activeVoices);
+            this.LastRefusal = string.Empty;
             return true;
         }
         catch (Exception ex)
         {
+            this.LastRefusal = $"AddMixerInput threw: {ex.Message}";
             this.log.Error(ex, "ManagedVoiceSink: AddMixerInput failed");
             return false;
         }
@@ -130,7 +153,27 @@ public sealed class ManagedVoiceSink : IVoiceSink
 
     public void Update()
     {
-        // Nothing per-frame yet. Moving-caster tracking arrives with v2.
+        // Nothing per-frame, and nothing that could follow a caster: NAudio gives us gain
+        // and a pan law, so there is no position here to keep up to date.
+    }
+
+    public void StopAll()
+    {
+        try
+        {
+            this.mixer?.RemoveAllMixerInputs();
+        }
+        catch (Exception ex)
+        {
+            this.log.Error(ex, "ManagedVoiceSink: stopping every input failed");
+        }
+        finally
+        {
+            // RemoveAllMixerInputs does not raise MixerInputEnded, so the count has to be
+            // zeroed by hand. A lost decrement is permanent: enough of them and the cap
+            // check refuses every line for the rest of the session.
+            Interlocked.Exchange(ref this.activeVoices, 0);
+        }
     }
 
     private void OnInputEnded(object? sender, SampleProviderEventArgs e)

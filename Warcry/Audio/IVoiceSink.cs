@@ -104,4 +104,12 @@ public interface IVoiceSink : IDisposable
 
     /// <summary>Called every frame on the game main thread.</summary>
     void Update();
+
+    /// <summary>Stop everything sounding right now. Game main thread.</summary>
+    /// <remarks>
+    /// Called on a zone change and during teardown. Not politeness: for the native sink
+    /// this is also how a retained slot in the game's 256-entry sound pool gets handed
+    /// back, and a slot leaked past unload is gone until the client restarts.
+    /// </remarks>
+    void StopAll();
 }

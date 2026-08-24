@@ -92,12 +92,12 @@ public sealed class CompositeVoiceSink : IVoiceSink
                 case SinkMode.NativeOnly:
                     if (this.Demoted)
                     {
-                        return $"SILENT — native demoted after {StrikeLimit} errors, and NativeOnly does not fall back";
+                        return $"SILENT. The game engine path was given up on after {StrikeLimit} errors, and this mode does not fall back";
                     }
 
                     return this.native.Available
                         ? this.native.Status
-                        : $"SILENT — native unavailable: {this.native.Status}";
+                        : $"SILENT. Game engine unavailable: {this.native.Status}";
 
                 default:
                     if (this.Demoted)
@@ -106,7 +106,7 @@ public sealed class CompositeVoiceSink : IVoiceSink
                     }
 
                     return this.native.Available
-                        ? $"{this.native.Status}  — falls back to: {this.managed.Status}"
+                        ? $"{this.native.Status}, falling back to: {this.managed.Status}"
                         : $"{this.managed.Status}  (native unavailable: {this.native.Status})";
             }
         }
@@ -189,7 +189,7 @@ public sealed class CompositeVoiceSink : IVoiceSink
             return true;
         }
 
-        this.LastRefusal = $"managed sink refused: {this.managed.Status}";
+        this.LastRefusal = $"managed sink refused: {this.managed.LastRefusal}";
         return false;
     }
 
@@ -197,6 +197,12 @@ public sealed class CompositeVoiceSink : IVoiceSink
     {
         this.native.Update();
         this.managed.Update();
+    }
+
+    public void StopAll()
+    {
+        this.native.StopAll();
+        this.managed.StopAll();
     }
 
     public void Dispose()

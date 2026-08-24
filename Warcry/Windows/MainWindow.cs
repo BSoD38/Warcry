@@ -26,6 +26,7 @@ public sealed partial class MainWindow : Window, IDisposable
     private readonly Dictionary<uint, string> actionNames = new();
     private readonly Dictionary<uint, string> categoryNames = new();
     private readonly Dictionary<uint, float> castTimes = new();
+    private readonly Dictionary<uint, string> zoneNames = new();
 
     /// <summary>Pumped by PostDraw here; opened by the Clips tab.</summary>
     private readonly FileDialogManager fileDialog = new();
@@ -52,13 +53,31 @@ public sealed partial class MainWindow : Window, IDisposable
     /// </summary>
     public override void PostDraw() => this.fileDialog.Draw();
 
+    /// <summary>
+    /// Tabs in the order the job is actually done: import clips, decide which action plays
+    /// them, tune how they behave, then — only if something is wrong — look at what the
+    /// plugin heard and how it is.
+    /// </summary>
+    /// <remarks>
+    /// The old order opened on Events, i.e. on a diagnostic log, before the user had
+    /// imported anything. Setup happens once and troubleshooting is occasional, but a first
+    /// run has to lead somewhere useful, and "Clips" is where every path starts.
+    /// </remarks>
     public override void Draw()
     {
         if (ImGui.BeginTabBar("##warcrytabs"))
         {
-            if (ImGui.BeginTabItem("Events"))
+            if (ImGui.BeginTabItem("Clips"))
             {
-                this.DrawEvents();
+                this.DrawClips();
+                ImGui.EndTabItem();
+            }
+
+            var mappingFlags = this.jumpToMappings ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+            this.jumpToMappings = false;
+            if (ImGui.BeginTabItem("Actions", mappingFlags))
+            {
+                this.DrawMappings();
                 ImGui.EndTabItem();
             }
 
@@ -68,29 +87,15 @@ public sealed partial class MainWindow : Window, IDisposable
                 ImGui.EndTabItem();
             }
 
+            if (ImGui.BeginTabItem("Events"))
+            {
+                this.DrawEvents();
+                ImGui.EndTabItem();
+            }
+
             if (ImGui.BeginTabItem("Status"))
             {
                 this.DrawStatus();
-                ImGui.EndTabItem();
-            }
-
-            var mappingFlags = this.jumpToMappings ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
-            this.jumpToMappings = false;
-            if (ImGui.BeginTabItem("Mappings", mappingFlags))
-            {
-                this.DrawMappings();
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Clips"))
-            {
-                this.DrawClips();
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Sound pack"))
-            {
-                this.DrawSoundPack();
                 ImGui.EndTabItem();
             }
 
@@ -140,6 +145,41 @@ public sealed partial class MainWindow : Window, IDisposable
         var seconds = sheet.TryGetRow(actionId, out var row) ? row.Cast100ms / 10f : 0f;
         this.castTimes[actionId] = seconds;
         return seconds;
+    }
+
+    /// <summary>
+    /// The zone's name, for a TerritoryType id.
+    /// </summary>
+    /// <remarks>
+    /// "Mute this zone (1185)" tells a player nothing they can act on. The id stays
+    /// available in the diagnostics report, where it is the useful form.
+    /// </remarks>
+    private string ZoneName(uint territory)
+    {
+        if (territory == 0)
+        {
+            return "this zone";
+        }
+
+        if (this.zoneNames.TryGetValue(territory, out var cached))
+        {
+            return cached;
+        }
+
+        var sheet = Plugin.Data.GetExcelSheet<Lumina.Excel.Sheets.TerritoryType>();
+        var name = string.Empty;
+        if (sheet.TryGetRow(territory, out var row))
+        {
+            name = row.PlaceName.ValueNullable?.Name.ExtractText() ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = $"zone {territory}";
+        }
+
+        this.zoneNames[territory] = name;
+        return name;
     }
 
     private string CategoryOf(uint actionId)

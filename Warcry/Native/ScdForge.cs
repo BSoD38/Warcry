@@ -82,11 +82,26 @@ public sealed class ScdForge
     private readonly PenumbraBridge penumbra;
     private readonly string cacheDir;
 
-    /// <summary>Guards <see cref="byVariant"/> and <see cref="inFlight"/> across threads.</summary>
+    /// <summary>
+    /// Guards <see cref="byVariant"/>, <see cref="inFlight"/> and <see cref="failed"/>
+    /// across threads.
+    /// </summary>
     private readonly object gate = new();
 
     private readonly Dictionary<string, ForgedClip> byVariant = [];
     private readonly HashSet<string> inFlight = [];
+
+    /// <summary>
+    /// Variants that cannot be encoded, and why. Guarded by <see cref="gate"/>.
+    /// </summary>
+    /// <remarks>
+    /// A terminal failure has to be remembered. Without this a clip that decodes to nothing
+    /// — or is too long to encode — left no trace in either <see cref="byVariant"/> or
+    /// <see cref="inFlight"/>, so every later cast spawned another encode, drained the whole
+    /// provider again, and logged the same warning forever. Cleared by <see cref="Clear"/>,
+    /// so re-importing the clip is a real retry.
+    /// </remarks>
+    private readonly Dictionary<string, string> failed = [];
     private readonly System.Collections.Concurrent.ConcurrentQueue<Encoded> completed = new();
 
     /// <summary>Main-thread only: Penumbra IPC and the redirect set are not shared.</summary>
@@ -222,6 +237,32 @@ public sealed class ScdForge
         }
     }
 
+    /// <summary>
+    /// Why a variant will never encode, for a caller that needs to say so out loud.
+    /// </summary>
+    /// <remarks>A terminal answer: retrying it is what <see cref="Clear"/> is for.</remarks>
+    public bool TryGetFailure(string variantKey, out string reason)
+    {
+        lock (this.gate)
+        {
+            return this.failed.TryGetValue(variantKey, out reason!);
+        }
+    }
+
+    /// <summary>Records a terminal encode failure and logs it once.</summary>
+    private void MarkFailed(string variantKey, string reason)
+    {
+        lock (this.gate)
+        {
+            if (!this.failed.TryAdd(variantKey, reason))
+            {
+                return;
+            }
+        }
+
+        this.log.Warning("ScdForge: {Key} will not encode — {Reason}", variantKey, reason);
+    }
+
     /// <summary>Registered clips the engine has never been asked for. Snapshot.</summary>
     public List<ForgedClip> UnwarmedClips()
     {
@@ -295,7 +336,7 @@ public sealed class ScdForge
         this.template = null;
         this.templateLoadFailed = true;
         this.Ready = false;
-        this.Status = "no battle-voice container could be read from the game files (latched — reload the plugin to retry)";
+        this.Status = "no battle-voice container could be read from the game files. Reload the plugin to retry";
         return false;
     }
 
@@ -334,8 +375,8 @@ public sealed class ScdForge
             this.lastStatusReady = ready;
             this.lastStatusPending = pending;
             this.Status = pending > 0
-                ? $"ready — {ready} clip(s) encoded, {pending} in progress"
-                : $"ready — {ready} clip(s) encoded from {this.TemplatePath}";
+                ? $"{ready} clip(s) ready, {pending} still being prepared"
+                : $"{ready} clip(s) ready, built from {this.TemplatePath}";
         }
 
         return true;
@@ -381,14 +422,14 @@ public sealed class ScdForge
                 return true;
             }
 
-            if (this.inFlight.Contains(variantKey))
+            if (this.inFlight.Contains(variantKey) || this.failed.ContainsKey(variantKey))
             {
                 return false;
             }
 
             if (this.byVariant.Count + this.inFlight.Count >= MaxVariants)
             {
-                this.Status = $"variant cap reached ({MaxVariants}) — reload the plugin to clear it";
+                this.Status = $"at the limit of {MaxVariants} prepared clips. Reload the plugin to clear it";
                 return false;
             }
 
@@ -418,10 +459,22 @@ public sealed class ScdForge
                     return;
                 }
 
-                var pcm = Drain(createSource(), out var seconds);
+                var pcm = Drain(createSource(), out var seconds, out var tooLong);
+
+                if (tooLong)
+                {
+                    // Refuse, as MaxSeconds has always claimed to. Truncating instead
+                    // silently shortened the user's audio and then reported the clipped
+                    // length back as fact.
+                    this.MarkFailed(
+                        variantKey,
+                        $"the clip is longer than {MaxSeconds:0}s, so trim it and import it again");
+                    return;
+                }
+
                 if (pcm.Length == 0)
                 {
-                    this.log.Warning("ScdForge: {Key} produced no samples", variantKey);
+                    this.MarkFailed(variantKey, "the clip decoded to no samples");
                     return;
                 }
 
@@ -556,20 +609,35 @@ public sealed class ScdForge
     /// <summary>
     /// Reads a provider to exhaustion into 16-bit mono samples.
     /// </summary>
-    private static short[] Drain(ISampleProvider source, out float seconds)
+    /// <param name="tooLong">
+    /// Set when the source ran past <see cref="MaxSeconds"/>. The caller refuses on this
+    /// rather than encoding what was collected: a truncated clip is indistinguishable from
+    /// a correct one once it is on disk.
+    /// </param>
+    private static short[] Drain(ISampleProvider source, out float seconds, out bool tooLong)
     {
         var rate = source.WaveFormat.SampleRate;
         var limit = (int)(rate * MaxSeconds);
         var buffer = new float[4096];
         var collected = new List<short>(rate);
 
+        tooLong = false;
+
         int read;
-        while ((read = source.Read(buffer, 0, buffer.Length)) > 0 && collected.Count < limit)
+        while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
         {
             for (var i = 0; i < read; i++)
             {
                 var v = Math.Clamp(buffer[i], -1f, 1f);
                 collected.Add((short)(v * short.MaxValue));
+            }
+
+            // Tested after appending, not in the loop condition: checking first discarded
+            // the block that had already been read out of the provider.
+            if (collected.Count > limit)
+            {
+                tooLong = true;
+                break;
             }
         }
 
@@ -649,6 +717,9 @@ public sealed class ScdForge
         lock (this.gate)
         {
             this.byVariant.Clear();
+
+            // Terminal failures go too: clearing the forge is the retry.
+            this.failed.Clear();
         }
 
         this.redirects.Clear();

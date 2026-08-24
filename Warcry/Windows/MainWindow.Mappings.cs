@@ -31,7 +31,7 @@ public sealed partial class MainWindow
 
         if (lib.Count == 0)
         {
-            ImGui.TextDisabled("Import a clip first, on the Clips tab.");
+            ImGui.TextDisabled("Import a sound file on the Clips tab first, then come back here.");
             return;
         }
 
@@ -61,7 +61,7 @@ public sealed partial class MainWindow
                     continue;
                 }
 
-                if (ImGui.Selectable($"{abbr} — {job.Name.ExtractText()}"))
+                if (ImGui.Selectable($"{abbr}  {job.Name.ExtractText()}"))
                 {
                     this.jobFilter = job.RowId;
                     this.followCurrentJob = false;
@@ -194,7 +194,7 @@ public sealed partial class MainWindow
 
                 if (ImGui.IsItemHovered())
                 {
-                    var prefix = seen ? "You have used this one — it is the id that actually fires.\n\n" : string.Empty;
+                    var prefix = seen ? "You have used this one, so it is the id that actually fires.\n\n" : string.Empty;
                     ImGui.SetTooltip(prefix + this.ActionDebugInfo(id));
                 }
             }
@@ -202,7 +202,7 @@ public sealed partial class MainWindow
             if (this.matchesTruncated)
             {
                 ImGui.Separator();
-                ImGui.TextDisabled("List truncated — narrow the search.");
+                ImGui.TextDisabled("List truncated. Narrow the search.");
             }
 
             ImGui.EndCombo();
@@ -262,7 +262,7 @@ public sealed partial class MainWindow
 
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("Fills in whatever you last pressed — faster than searching.");
+            ImGui.SetTooltip("Fills in whatever you last pressed, which is faster than searching.");
         }
 
         ImGui.Separator();
@@ -281,12 +281,19 @@ public sealed partial class MainWindow
             : $"{shown} of {totalRules} mapping(s) shown");
 
         ImGui.SameLine();
+
+        // Same wording as the Settings tab. Two labels for one setting had readers
+        // hunting for the difference between them.
         var fallback = this.plugin.Config.FallBackToTestTone;
-        if (ImGui.Checkbox("Tone for unmapped actions", ref fallback))
+        if (ImGui.Checkbox("Beep when an action has no clip", ref fallback))
         {
             this.plugin.Config.FallBackToTestTone = fallback;
             this.plugin.Config.Save();
         }
+
+        // Readiness sits here rather than on a tab of its own: this is the moment the user
+        // has just changed a mapping and wants to know it took effect.
+        this.DrawPrepareBar();
 
         // ---- bulk pitch ----
         if (shown > 0)
@@ -330,7 +337,7 @@ public sealed partial class MainWindow
         {
             if (store.Profiles.Count > 1)
             {
-                ImGui.TextDisabled($"{profile.Name} — {profile.Match.Describe(RaceName, TribeName)}");
+                ImGui.TextDisabled($"{profile.Name}  {profile.Match.Describe(RaceName, TribeName)}");
             }
 
             // Sorted for DISPLAY only, on a materialised copy. The backing list is

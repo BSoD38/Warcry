@@ -26,7 +26,7 @@ public sealed class Configuration : IPluginConfiguration
     /// The schema version this build writes. Bump it and add a step to
     /// <see cref="Migrate"/> whenever a field changes meaning or goes away.
     /// </summary>
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     /// <summary>Schema version. Bump and add an ordered migration step when fields change.</summary>
     public int Version { get; set; } = CurrentVersion;
@@ -67,6 +67,20 @@ public sealed class Configuration : IPluginConfiguration
     /// explained drop.</para>
     /// </remarks>
     public SinkMode Sink { get; set; } = SinkMode.Auto;
+
+    /// <summary>
+    /// Where a line sounds from, and whether it tracks its caster. See
+    /// <see cref="VoicePositionMode"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>Defaults to <see cref="VoicePositionMode.Follow"/>, confirmed working in game on
+    /// 2026-08-24: the engine treats a position handed to <c>PlaySound</c> as fixed for the
+    /// whole clip and the listener follows the camera, so without following, any skill that
+    /// displaces you leaves your own voiceline behind and it fades out mid-word.</para>
+    /// <para>Native sink only. NAudio has no positional model at all, so a line that falls
+    /// back to it in <see cref="SinkMode.Auto"/> ignores this.</para>
+    /// </remarks>
+    public VoicePositionMode VoicePosition { get; set; } = VoicePositionMode.Follow;
 
     /// <summary>
     /// v1 field, superseded by <see cref="Sink"/>. Kept only so old configs deserialise;
@@ -211,6 +225,11 @@ public sealed class Configuration : IPluginConfiguration
         // confirmed working, so varispeed pitch always rides it. No data to transform;
         // the stored bool is simply dropped on load.
 
+        // v4 (2026-08-24): FollowViaDriver removed. The driver-level position push was
+        // behind a flag only while it was unproven; it is what makes Follow follow, so it
+        // is now unconditional. Same shape as v3 — the stored bool is dropped on load, and
+        // anyone who had it off gets working following rather than a silently inert mode.
+
         this.Version = CurrentVersion;
         log.Information("Warcry: migrated configuration from version {From} to {To}.", from, this.Version);
         return true;
@@ -238,6 +257,13 @@ public sealed class Configuration : IPluginConfiguration
         {
             log.Warning("Warcry: Sink was {Value}; reset to ManagedOnly.", this.Sink);
             this.Sink = SinkMode.ManagedOnly;
+            repairs++;
+        }
+
+        if (!Enum.IsDefined(this.VoicePosition))
+        {
+            log.Warning("Warcry: VoicePosition was {Value}; reset to Follow.", this.VoicePosition);
+            this.VoicePosition = VoicePositionMode.Follow;
             repairs++;
         }
 
