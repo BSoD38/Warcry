@@ -140,6 +140,25 @@ public sealed unsafe class ActionWatcher : IDisposable
                 }
             }
 
+            // Compare the 32-bit ENTITY id. Never use SourceSequence as an identity test:
+            // it is 0 for some of your own actions (NIN mudras).
+            var isSelf = casterEntityId == this.localEntityId();
+
+            // Audience inputs. Every one of them is a field the server already populated on
+            // the spawned object, so this is six loads and a hash over at most 32 bytes —
+            // no object-table lookup, no allocation, nothing that can fail. Only gathered
+            // for a player character; nothing else can be classified anyway.
+            var facts = drop == DropStage.None
+                ? new CasterFacts(
+                    NameHash: PlayerId.Of(casterPtr->GameObject.Name),
+                    HomeWorld: casterPtr->HomeWorld,
+                    Distance: casterPtr->CurrentDistance,
+                    IsPartyMember: casterPtr->IsPartyMember,
+                    IsAllianceMember: casterPtr->IsAllianceMember,
+                    IsFriend: casterPtr->IsFriend,
+                    IsSelf: isSelf)
+                : CasterFacts.Unknown with { IsSelf = isSelf };
+
             var p = casterPtr->GameObject.Position;
 
             var ev = new CastEvent(
@@ -154,9 +173,7 @@ public sealed unsafe class ActionWatcher : IDisposable
                 position: new SNVector3(p.X, p.Y, p.Z),
                 soundCategory: casterPtr->SoundVolumeCategory,
                 caster: caster,
-                // Compare the 32-bit ENTITY id. Never use SourceSequence as an identity
-                // test: it is 0 for some of your own actions (NIN mudras).
-                isLocalPlayer: casterEntityId == this.localEntityId(),
+                facts: in facts,
                 phase: TriggerPhase.Snapshot,
                 wasCasting: wasCasting,
                 castCurrent: castCurrent,

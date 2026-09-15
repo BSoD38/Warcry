@@ -109,7 +109,7 @@ public sealed partial class MainWindow
 
         var cooldown = cfg.SelfCooldownSeconds;
         ImGui.SetNextItemWidth(220);
-        if (ImGui.SliderFloat("Minimum gap between lines", ref cooldown, 0f, 15f, cooldown <= 0f ? "off" : "%.1f s"))
+        if (ImGui.SliderFloat("Minimum gap between your lines", ref cooldown, 0f, 15f, cooldown <= 0f ? "off" : "%.1f s"))
         {
             cfg.SelfCooldownSeconds = cooldown;
         }
@@ -125,7 +125,8 @@ public sealed partial class MainWindow
                 "The single most important setting for whether this stays fun past the\n" +
                 "first hour.\n\n" +
                 "A rotation fires roughly every 2.5s, so 2s lets most casts through while\n" +
-                "still collapsing bursts of instants into one line.");
+                "still collapsing bursts of instants into one line.\n\n" +
+                "Other people have their own gaps, on the People tab.");
         }
 
         var concurrent = cfg.MaxConcurrent;
@@ -143,11 +144,16 @@ public sealed partial class MainWindow
         if (ImGui.IsItemHovered())
         {
             ImGui.SetTooltip(
-                "How many of your lines may overlap. Deliberately capped low: the game has\n" +
-                "a limited number of sound slots and they are shared with everything else\n" +
-                "the client is playing, so taking too many would start silencing the game\n" +
-                "itself.");
+                "How many lines may overlap. Deliberately capped low: the game has a limited\n" +
+                "number of sound slots and they are shared with everything else the client\n" +
+                "is playing, so taking too many would start silencing the game itself.\n\n" +
+                "When you are listening to other people, one of these is always kept free\n" +
+                "for your own lines, so a crowd cannot drown you out.");
         }
+
+        Section("The game's own grunts");
+
+        this.DrawGruntSetting(cfg, ref dirty);
 
         Section("Where lines stay quiet");
 
@@ -418,6 +424,98 @@ public sealed partial class MainWindow
          "Immune to being moved by construction, at the cost of not sounding like it is\n" +
          "coming from your character at all."),
     ];
+
+    private static readonly (GruntMode Mode, string Label, string Blurb)[] GruntModes =
+    [
+        (GruntMode.Off, "Leave them alone",
+         "Your character grunts exactly as the game intends, and a Warcry line plays on\n" +
+         "top of it."),
+        (GruntMode.WhenVoiced, "Silence the one Warcry replaces",
+         "The grunt is silenced only for actions Warcry actually voices, so you hear your\n" +
+         "clip instead of both at once.\n\n" +
+         "Actions you have nothing mapped to still grunt normally, and so does everyone\n" +
+         "whose lines you are not playing."),
+        (GruntMode.Always, "Silence all of them",
+         "Nobody grunts when they attack — not you, not anyone near you — whether or not\n" +
+         "Warcry has anything to say for it.\n\n" +
+         "This one is about the game's audio rather than about Warcry: it needs nothing\n" +
+         "mapped and no clips loaded."),
+    ];
+
+    /// <summary>
+    /// How much of the game's own battle voice to take away. Off by default, because an
+    /// update that changes what the game sounds like unasked is a nasty surprise.
+    /// </summary>
+    private void DrawGruntSetting(Configuration cfg, ref bool dirty)
+    {
+        if (!this.plugin.Grunts.Installed)
+        {
+            ImGui.TextUnformatted("⚠ Unavailable — Warcry could not find the game's sound function.");
+            ImGui.TextDisabled("   Usually a game patch. Detection and playback are unaffected.");
+            return;
+        }
+
+        var currentLabel = "?";
+        foreach (var (mode, label, _) in GruntModes)
+        {
+            if (mode == cfg.Grunts)
+            {
+                currentLabel = label;
+            }
+        }
+
+        ImGui.SetNextItemWidth(260f);
+        if (ImGui.BeginCombo("Grunt when you attack", currentLabel))
+        {
+            foreach (var (mode, label, blurb) in GruntModes)
+            {
+                if (ImGui.Selectable(label, mode == cfg.Grunts))
+                {
+                    cfg.Grunts = mode;
+                    dirty = true;
+                }
+
+                if (ImGui.IsItemHovered())
+                {
+                    ImGui.SetTooltip(blurb);
+                }
+            }
+
+            ImGui.EndCombo();
+        }
+
+        // Only one mode has to attribute a grunt to a caster, so only one has a window.
+        if (cfg.Grunts == GruntMode.WhenVoiced)
+        {
+            var window = cfg.GruntWindowSeconds;
+            ImGui.SetNextItemWidth(260f);
+            if (ImGui.SliderFloat("Stay silent for", ref window, 0.1f, 5f, "%.1f s"))
+            {
+                cfg.GruntWindowSeconds = window;
+            }
+
+            if (ImGui.IsItemDeactivatedAfterEdit())
+            {
+                dirty = true;
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip(
+                    "The grunt comes from the action's animation rather than from the action\n" +
+                    "itself, so it can arrive anything up to a second after Warcry hears the\n" +
+                    "cast. This is how long to keep waiting for it.\n\n" +
+                    "Too short and it slips through on slow animations. Too long and a fast\n" +
+                    "rotation loses the grunt of the action after the one Warcry voiced.");
+            }
+        }
+
+        // Worth saying under either suppressing mode: "silence all of them" reads like it
+        // would take the character's whole voice, and it does not.
+        ImGui.TextDisabled(cfg.Grunts == GruntMode.Off
+            ? "  Nothing of the game's own voice is taken away."
+            : "  Grunts for taking damage and dying are never touched.");
+    }
 
     /// <summary>
     /// Where a line sounds from. Follow is the default because the alternative is a line

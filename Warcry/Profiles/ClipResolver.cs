@@ -24,18 +24,22 @@ public sealed class ClipResolver
 
     private readonly Dictionary<uint, ActionKey> actionCache = [];
 
-    /// <summary>Last clip played per (caster, rule), so a variant never repeats back to back.</summary>
-    private readonly Dictionary<(CasterKey Caster, string RuleId), string> lastClip = [];
+    /// <summary>Last clip played per (player, rule), so a variant never repeats back to back.</summary>
+    /// <remarks>
+    /// Keyed on the player rather than on <see cref="CasterKey"/>. Two strangers who happen
+    /// to share a race and a voice are still two people, and letting them share one
+    /// no-repeat slot would make each of them sound MORE repetitive than either alone.
+    /// </remarks>
+    private readonly Dictionary<(ulong Player, string RuleId), string> lastClip = [];
 
     /// <summary>
-    /// Ceiling on remembered (caster, rule) pairs.
+    /// Ceiling on remembered (player, rule) pairs.
     /// </summary>
     /// <remarks>
-    /// One entry per caster per rule they have triggered. Bounded at one caster in v1, but
-    /// unbounded the moment remote players arrive — a raid night's worth of strangers would
-    /// accumulate for the session with nothing but an explicit
-    /// <see cref="ClearCaches"/> to reclaim it. Forgetting is cheap: the only cost is that
-    /// one clip may repeat once.
+    /// One entry per player per rule they have triggered. With remote casters admitted this
+    /// grows with the crowd, so a raid night's worth of strangers would otherwise accumulate
+    /// for the whole session with nothing but an explicit <see cref="ClearCaches"/> to
+    /// reclaim it. Forgetting is cheap: the only cost is that one clip may repeat once.
     /// </remarks>
     private const int MaxRememberedPicks = 4096;
 
@@ -87,7 +91,7 @@ public sealed class ClipResolver
     /// Null means silence, which is a valid answer. Pass a list to collect an
     /// explanation — leave it null on the hot path.
     /// </summary>
-    public ResolvedClip? Resolve(in CasterKey caster, in ActionKey action, List<string>? trace = null)
+    public ResolvedClip? Resolve(in CasterIdentity who, in ActionKey action, List<string>? trace = null)
     {
         foreach (var profile in this.profiles.Sorted)
         {
@@ -97,9 +101,16 @@ public sealed class ClipResolver
                 continue;
             }
 
-            if (!profile.Match.Accepts(in caster))
+            if (!profile.Match.Accepts(in who))
             {
-                trace?.Add($"skip '{profile.Name}': character does not match");
+                // Which half missed is most of the value of the trace: a profile aimed at
+                // your party skipping a stranger is working as asked, whereas one skipping
+                // your party member is a setup mistake. If the appearance half matched,
+                // the target half is what refused. Costs nothing when trace is null — the
+                // null-conditional call does not evaluate its argument.
+                trace?.Add(profile.Match.Accepts(who.Voice)
+                    ? $"skip '{profile.Name}': not aimed at {Audience.Describe(who.Audience)}"
+                    : $"skip '{profile.Name}': character does not match");
                 continue;
             }
 
@@ -115,7 +126,7 @@ public sealed class ClipResolver
                     continue;
                 }
 
-                var clip = this.PickWeighted(rule, in caster);
+                var clip = this.PickWeighted(rule, who.NameHash);
                 if (clip is null)
                 {
                     trace?.Add($"'{profile.Name}' / rule '{rule.Label}': matched but has no usable clip");
@@ -177,7 +188,7 @@ public sealed class ClipResolver
     /// Cumulative-weight pick that avoids repeating the previous clip when the rule has
     /// two or more. This is the single highest-value anti-annoyance measure in the plugin.
     /// </summary>
-    private ClipRef? PickWeighted(VoiceRule rule, in CasterKey caster)
+    private ClipRef? PickWeighted(VoiceRule rule, ulong player)
     {
         if (rule.Clips.Count == 0)
         {
@@ -189,11 +200,11 @@ public sealed class ClipResolver
             // Recorded even though there is nothing to avoid yet: the moment a second
             // clip is added to the rule, "don't repeat what just played" must already
             // know what just played.
-            this.Remember(in caster, rule.Id, rule.Clips[0].Hash);
+            this.Remember(player, rule.Id, rule.Clips[0].Hash);
             return rule.Clips[0];
         }
 
-        this.lastClip.TryGetValue((caster, rule.Id), out var previous);
+        this.lastClip.TryGetValue((player, rule.Id), out var previous);
 
         var total = 0;
         foreach (var c in rule.Clips)
@@ -207,7 +218,7 @@ public sealed class ClipResolver
         if (total <= 0)
         {
             // Every clip in the rule shares the previous pick's hash (duplicated entries).
-            this.Remember(in caster, rule.Id, rule.Clips[0].Hash);
+            this.Remember(player, rule.Id, rule.Clips[0].Hash);
             return rule.Clips[0];
         }
 
@@ -223,21 +234,21 @@ public sealed class ClipResolver
             roll -= Math.Max(1, c.Weight);
             if (roll < 0)
             {
-                this.Remember(in caster, rule.Id, c.Hash);
+                this.Remember(player, rule.Id, c.Hash);
                 return c;
             }
         }
 
         // Unreachable while the roll is bounded by the summed weights, but if it is ever
         // reached the fallback still has to count as the previous pick.
-        this.Remember(in caster, rule.Id, rule.Clips[0].Hash);
+        this.Remember(player, rule.Id, rule.Clips[0].Hash);
         return rule.Clips[0];
     }
 
-    /// <summary>Records what just played for this (caster, rule), within a fixed bound.</summary>
-    private void Remember(in CasterKey caster, string ruleId, string hash)
+    /// <summary>Records what just played for this (player, rule), within a fixed bound.</summary>
+    private void Remember(ulong player, string ruleId, string hash)
     {
-        var key = (caster, ruleId);
+        var key = (player, ruleId);
 
         // Dropping the whole table is the right trade against tracking an eviction order
         // on the cast path. Overwriting an existing key is always free, so this only ever

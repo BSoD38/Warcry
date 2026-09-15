@@ -6,7 +6,8 @@ Warcry is a Dalamud plugin for Final Fantasy XIV that plays user-supplied voice 
 
 Product decisions that bound the design space (do not re-litigate; see the project memory and `docs/PLAN.md`):
 
-- **v1 scope: local player only** — but "who cast it" is a seam, not a hardcoded `== LocalPlayer`. Remote players, crowd throttling, and identity resolution are v2.
+- **Audience is a filter, never a hardcoded `== LocalPlayer`.** M9 (2026-08-24) replaced the self-only seam with `Gating/AudienceFilter`: Self / Named / Party / Alliance / Friend / Other, plus a block list and a distance gate. **A caster's buckets are a set, not a first match** — a friend in your party is `Party | Friend`. The narrowest *enabled* bucket is the cooldown tier; the whole set is what a profile's target matches against. **Self-only is still the shipped default** and the v5 migration forces it, because an update that starts voicing strangers is a nasty surprise.
+- **Profiles carry a target** (`ProfileMatch.Audience` + `Names`), so different people can get different clips. Specificity is banded so *who* outranks *what they sound like*: names 128, audience tier ×32, appearance ≤18. A profile with no target means "everyone", which is why pre-M9 profiles needed no migration.
 - **Distribution: self-hosted third-party repo** (`repo.json`), not DalamudPluginsD17 — official-repo review constraints (native deps, UGC moderation) are not binding.
 - **Native audio path**: a hard dependency on Penumbra IPC is acceptable; `.scd` redirection puts clips on the game's own voice channel with native 3D falloff. **Verified working in game (2026-08-18)**: sliders, positional attenuation, load test, engine-side pitch.
 - **Timing: at impact.** `ActionEffectHandler.Receive` fires at *snapshot*, roughly one slidecast window (~0.5 s, latency-dependent) before the cast bar visually completes — the offset is on the critical path.
@@ -15,7 +16,9 @@ Load-bearing invariants:
 
 - **Native mode means native only.** When the native sink is selected, no gameplay line may play through NAudio. A refusal is a visible, counted drop with a reason — never a quiet substitute. NAudio survives only as the decoder and the editor's audition path.
 - **Selection/probability lives in the plugin resolver** (weighted roll + no-immediate-repeat), never compiled into SCD groups — groups are forced deterministic, one container per clip.
-- **Compile everything, activate per job.** All mappings encode ahead of time; only the current job's reachable clips are warmed, because warmed resource handles are unevictable client memory.
+- **Compile everything, activate per job.** All mappings encode ahead of time; only reachable clips are warmed, because warmed resource handles are unevictable client memory. "Reachable" is the union of jobs from `Gating/CrowdWatch` — yours plus the audible players around you, refreshed at 1 Hz. It is an *earned* set, never "every job in the game".
+- **The detour allocates nothing for the audience.** Everything the filter needs is read off `Character*` into a `Game/CasterFacts` inside `ActionWatcher`; names are compared as FNV-1a hashes (`Game/PlayerId`) because `NameString` allocates per cast. `CrowdWatch` builds the identical struct from the object table, so both paths classify through one code path and cannot drift.
+- **Grunt suppression touches the attack banks only.** A `Vo_Battle` container's `soundNumber` picks a group: **1 is damage taken, 2 is death**, everything else is attack. `Audio/GruntSuppressor` and `Native/ScdForge` both honour that split, so a character Warcry has taken over still grunts when hurt and killed. Suppression zeroes the gain and always calls `Original` — the game passes `autoRelease: false` and keeps the `SoundData*`, so refusing the call would break its bookkeeping.
 
 `docs/PLAN.md` is the verified technical plan (API level, hook target, offsets, repo mechanics, milestones). **Read it before re-researching anything.** Items marked ⚠ in it are genuinely unverified.
 
@@ -37,16 +40,21 @@ Warcry/
   Plugin.cs            # Entry point; [PluginService] static properties (PROPERTY, not field)
   Configuration.cs     # Dalamud config persistence
   Audio/               # IVoiceSink abstraction: Native / Managed / Composite sinks,
-                       #   PlaybackScheduler (impact-timing offset), GameVolume, SinkMode
+                       #   PlaybackScheduler (impact-timing offset), GameVolume, SinkMode,
+                       #   GruntSuppressor (silences the game's own battle grunt)
   Clips/               # Clip library and decoded-clip cache
   Detection/           # ActionWatcher hooks ActionEffectHandler.Receive → CastEvent
-  Game/                # Game-side lookups: CasterKey, JobIndex, VoiceSlotTable
-  Gating/              # Gates + Throttle (when a line is allowed to fire)
+  Game/                # Game-side lookups and value types: CasterKey, CasterFacts,
+                       #   CasterIdentity, AudienceBucket, PlayerId, NamedPlayer,
+                       #   JobIndex, VoiceSlotTable
+  Gating/              # Gates + AudienceFilter (who) + CrowdWatch (how many) +
+                       #   Throttle (how often) — when a line is allowed to fire
   Native/              # SCD pipeline: ScdForge/ScdWriter/ScdInspector, MsAdPcm encoder,
                        #   PackBuilder (per-job pre-compiled packs), PenumbraBridge (IPC)
   Profiles/            # Mappings (Models), ClipResolver (weighted roll), ProfileStore
   Windows/             # MainWindow split into partial classes, one file per tab
-                       #   (MainWindow.Clips / .Mappings / .Settings / .SoundPack / .Status / .Events)
+                       #   (.Clips / .Mappings / .People / .Settings / .Status / .Events),
+                       #   plus shared drawing (.SoundPack, .MappingSets)
 docs/PLAN.md           # Verified technical plan — the source of truth
 ```
 
@@ -121,9 +129,10 @@ Do NOT generate code that:
 - **Upgrades NAudio to 3.x** or introduces APIs only present there
 - **Plays gameplay audio through NAudio while the native sink is selected** — refusals must be counted drops, not fallbacks
 - **Sets SDK-provided csproj properties** (TFM, LangVersion, platform, nullable, unsafe) — the Dalamud SDK owns them
-- **Hardcodes `LocalPlayer` checks outside the caster-filter seam** — v2 needs remote players
+- **Hardcodes `LocalPlayer` checks outside `Gating/AudienceFilter`** — remote casters are live; the filter is the only place allowed to answer "should this person play a line"
 - **Compiles selection weights or probability into SCD groups** — variety lives in `ClipResolver`
-- **Warms clips outside the active job's reachable set** — warmed handles are unevictable
+- **Warms clips outside the active job SET's reachable clips** — warmed handles are unevictable; widening the set to "all jobs" because remote players exist is exactly the mistake `CrowdWatch` exists to avoid
+- **Allocates in the ActionEffect detour for audience work** — no `NameString`, no object-table lookup; read into `CasterFacts` and compare hashes
 - **Blocks the framework or draw thread** with file I/O, encoding, or IPC waits
 - **Uses `async void`**, `.Result`/`.Wait()`, or static mutable state outside `Plugin`'s service properties
 - **Swallows a native-path failure silently** — every refusal carries a visible reason

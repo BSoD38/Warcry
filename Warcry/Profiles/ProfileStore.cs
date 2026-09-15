@@ -109,6 +109,15 @@ public sealed class ProfileStore
     /// </summary>
     private void Resort()
     {
+        // Load and Save are the only two moments a profile's name list can have changed,
+        // and both come through here. Rebuilding the derived hashes at this one point is
+        // what lets the cast path match a named player without touching a string.
+        foreach (var profile in this.document.Profiles)
+        {
+            profile.Match.Names ??= [];
+            profile.Match.RebuildNameCache();
+        }
+
         this.sorted = this.document.Profiles
             .OrderByDescending(p => p.Match.Specificity)
             .ThenByDescending(p => p.Priority)

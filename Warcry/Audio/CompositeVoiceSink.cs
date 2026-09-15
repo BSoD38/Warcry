@@ -1,5 +1,6 @@
 using System;
 using Dalamud.Plugin.Services;
+using Warcry.Game;
 
 namespace Warcry.Audio;
 
@@ -134,9 +135,23 @@ public sealed class CompositeVoiceSink : IVoiceSink
 
         // One cap over both sinks. The leaves also check their own counts, but the pool
         // this protects is shared with the whole game, so the sum is what matters.
-        if (this.ActiveVoices >= this.config.MaxConcurrent)
+        //
+        // The last voice is reserved for you (docs/PLAN.md 5.7 stage 5). Without it, a
+        // crowd fills every slot and the one line anyone actually cares about — their own —
+        // is the one refused. Only reserved while your own lines are switched on, and never
+        // when the cap is 1, which would leave nobody else able to play at all.
+        var reserve = this.config.MaxConcurrent > 1
+                      && (this.config.Audience & AudienceBucket.Self) != 0
+                      && !request.IsSelf;
+
+        var cap = reserve ? this.config.MaxConcurrent - 1 : this.config.MaxConcurrent;
+
+        if (this.ActiveVoices >= cap)
         {
-            this.LastRefusal = $"at the concurrency cap ({this.config.MaxConcurrent} at once, both sinks combined)";
+            this.LastRefusal = reserve
+                ? $"at the concurrency cap for other people ({cap} of {this.config.MaxConcurrent}; " +
+                  "the last voice is kept free for your own lines)"
+                : $"at the concurrency cap ({this.config.MaxConcurrent} at once, both sinks combined)";
             return false;
         }
 

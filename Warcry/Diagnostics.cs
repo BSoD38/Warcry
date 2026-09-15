@@ -1,5 +1,6 @@
 using System;
 using Warcry.Detection;
+using Warcry.Game;
 
 namespace Warcry;
 
@@ -40,6 +41,17 @@ public enum DropStage : byte
     /// at the delay ceiling.
     /// </remarks>
     TooFarOut = 9,
+
+    /// <summary>
+    /// Other people's lines were arriving faster than the global rate cap allows, so this
+    /// one was dropped rather than queued.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="Throttle"/> because the fix is different: a cooldown drop
+    /// means one person is casting too often, a rate drop means the crowd as a whole is.
+    /// Never applies to your own actions — you bypass the bucket.
+    /// </remarks>
+    RateLimited = 10,
 }
 
 public readonly struct DiagRow
@@ -49,12 +61,29 @@ public readonly struct DiagRow
     public readonly string CasterName;
     public readonly DropStage Drop;
 
-    public DiagRow(DateTime when, in CastEvent ev, string casterName, DropStage drop)
+    /// <summary>
+    /// The narrowest audience tier this caster fell into, or <see cref="AudienceBucket.None"/>
+    /// for anything that never reached the filter.
+    /// </summary>
+    public readonly AudienceBucket Audience;
+
+    /// <summary>Why the audience filter refused them, or empty. Always a literal.</summary>
+    public readonly string AudienceRefusal;
+
+    public DiagRow(
+        DateTime when,
+        in CastEvent ev,
+        string casterName,
+        DropStage drop,
+        AudienceBucket audience = AudienceBucket.None,
+        string audienceRefusal = "")
     {
         this.When = when;
         this.Event = ev;
         this.CasterName = casterName;
         this.Drop = drop;
+        this.Audience = audience;
+        this.AudienceRefusal = audienceRefusal;
     }
 }
 

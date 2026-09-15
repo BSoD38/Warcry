@@ -42,6 +42,10 @@ public sealed partial class MainWindow : Window, IDisposable
             MinimumSize = new Vector2(760, 420),
             MaximumSize = new Vector2(float.MaxValue, float.MaxValue),
         };
+
+        // Scrolling belongs to the per-tab child regions (see TabBody), so the window
+        // itself must never take a scroll of its own and drag the tab bar off the top.
+        Flags = ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
     }
 
     public void Dispose() => this.fileDialog.Reset();
@@ -55,8 +59,8 @@ public sealed partial class MainWindow : Window, IDisposable
 
     /// <summary>
     /// Tabs in the order the job is actually done: import clips, decide which action plays
-    /// them, tune how they behave, then — only if something is wrong — look at what the
-    /// plugin heard and how it is.
+    /// them, decide whose actions count, tune how they behave, then — only if something is
+    /// wrong — look at what the plugin heard and how it is.
     /// </summary>
     /// <remarks>
     /// The old order opened on Events, i.e. on a diagnostic log, before the user had
@@ -65,42 +69,50 @@ public sealed partial class MainWindow : Window, IDisposable
     /// </remarks>
     public override void Draw()
     {
-        if (ImGui.BeginTabBar("##warcrytabs"))
+        if (!ImGui.BeginTabBar("##warcrytabs"))
         {
-            if (ImGui.BeginTabItem("Clips"))
-            {
-                this.DrawClips();
-                ImGui.EndTabItem();
-            }
-
-            var mappingFlags = this.jumpToMappings ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
-            this.jumpToMappings = false;
-            if (ImGui.BeginTabItem("Actions", mappingFlags))
-            {
-                this.DrawMappings();
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Settings"))
-            {
-                this.DrawSettings();
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Events"))
-            {
-                this.DrawEvents();
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem("Status"))
-            {
-                this.DrawStatus();
-                ImGui.EndTabItem();
-            }
-
-            ImGui.EndTabBar();
+            return;
         }
+
+        TabBody("Clips", this.DrawClips);
+
+        // The Events tab's "map" button asks for the Actions tab; the request lasts one frame.
+        var mappingFlags = this.jumpToMappings ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+        this.jumpToMappings = false;
+        TabBody("Actions", this.DrawMappings, mappingFlags);
+
+        TabBody("People", this.DrawPeople);
+        TabBody("Settings", this.DrawSettings);
+        TabBody("Events", this.DrawEvents);
+        TabBody("Status", this.DrawStatus);
+
+        ImGui.EndTabBar();
+    }
+
+    /// <summary>
+    /// Draws one tab with its body inside a child region that fills whatever is left of the
+    /// window.
+    /// </summary>
+    /// <remarks>
+    /// The child is what pins the tab bar: drawn straight into the window, a long body grows
+    /// the window's own scroll region and carries the bar off the top with it. Bodies size
+    /// themselves against <c>GetContentRegionAvail()</c>, which now measures the child, so
+    /// they need no changes — and the window itself is left with nothing to scroll.
+    /// </remarks>
+    private static void TabBody(string label, Action draw, ImGuiTabItemFlags flags = ImGuiTabItemFlags.None)
+    {
+        if (!ImGui.BeginTabItem(label, flags))
+        {
+            return;
+        }
+
+        if (ImGui.BeginChild($"##body{label}", Vector2.Zero, false))
+        {
+            draw();
+        }
+
+        ImGui.EndChild();
+        ImGui.EndTabItem();
     }
 
     // ---------------------------------------------------------------- helpers

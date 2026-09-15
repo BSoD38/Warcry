@@ -1,6 +1,8 @@
+using System;
 using System.Text;
 using Dalamud.Bindings.ImGui;
 using Warcry.Audio;
+using Warcry.Game;
 using CSChar = FFXIVClientStructs.FFXIV.Client.Game.Character.Character;
 
 namespace Warcry.Windows;
@@ -29,6 +31,11 @@ public sealed partial class MainWindow
         ImGui.Separator();
         ImGui.Spacing();
 
+        this.DrawAudienceSummary();
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
         this.DrawWhyNotPlayed();
 
         ImGui.Spacing();
@@ -38,6 +45,8 @@ public sealed partial class MainWindow
         if (ImGui.CollapsingHeader("Details (for bug reports)"))
         {
             this.DrawDetectionDetail();
+            ImGui.Spacing();
+            this.DrawGruntDetail();
             ImGui.Spacing();
             this.DrawEngineDetail();
             ImGui.Spacing();
@@ -126,6 +135,50 @@ public sealed partial class MainWindow
     }
 
     /// <summary>
+    /// Who is being listened to and what the crowd is doing about it.
+    /// </summary>
+    /// <remarks>
+    /// Sits above the drop counters because it explains most of them. "1 240 lines skipped
+    /// for not being from someone you listen to" is alarming on its own and unremarkable
+    /// once you can see that you are listening to yourself in a city.
+    /// </remarks>
+    private void DrawAudienceSummary()
+    {
+        var cfg = this.plugin.Config;
+        var crowd = this.plugin.Crowd;
+
+        ImGui.TextUnformatted("People");
+        ImGui.TextUnformatted($"  Listening to  {Audience.Describe(cfg.Audience)}");
+
+        if (cfg.NamedPeople.Count > 0 || cfg.BlockedPeople.Count > 0)
+        {
+            ImGui.TextDisabled(
+                $"                {cfg.NamedPeople.Count} named, {cfg.BlockedPeople.Count} blocked");
+        }
+
+        if (!this.plugin.Audience.HearsAnyoneElse)
+        {
+            ImGui.TextDisabled("                nobody else, so no crowd scan and no rate cap run at all");
+            return;
+        }
+
+        ImGui.TextUnformatted($"  Nearby        {crowd.NearbyCount} audible player(s)"
+                              + (cfg.MaxDistanceYalms > 0 ? $" within {cfg.MaxDistanceYalms} yalms" : string.Empty));
+
+        var scale = crowd.CooldownScale;
+        ImGui.TextUnformatted(scale > 1.001f
+            ? $"  Crowd         x{scale:0.0} on other people's gaps " +
+              $"({this.plugin.Throttle.CooldownFor(AudienceBucket.Other):0.0}s for strangers)"
+            : "  Crowd         not stretching anyone's gaps");
+
+        if (cfg.LimitTotalRate)
+        {
+            ImGui.TextUnformatted(
+                $"  Rate cap      {this.plugin.Throttle.TokensAvailable} of {cfg.RateBurst} line(s) available");
+        }
+    }
+
+    /// <summary>
     /// The drop counters, in plain language, and only the ones that have happened.
     /// </summary>
     /// <remarks>
@@ -144,8 +197,9 @@ public sealed partial class MainWindow
         foreach (var stage in new[]
                  {
                      DropStage.PlaybackOff, DropStage.Gate, DropStage.Throttle,
-                     DropStage.NoClip, DropStage.SinkRefused, DropStage.TooFarOut,
-                     DropStage.Audience, DropStage.NotPc, DropStage.NotAction,
+                     DropStage.RateLimited, DropStage.NoClip, DropStage.SinkRefused,
+                     DropStage.TooFarOut, DropStage.Audience, DropStage.NotPc,
+                     DropStage.NotAction,
                  })
         {
             var n = diag.DropCount(stage);
@@ -176,7 +230,8 @@ public sealed partial class MainWindow
         DropStage.NoClip => "nothing is mapped to that action",
         DropStage.SinkRefused => "the sound could not be played, and the reason is on the Events tab",
         DropStage.TooFarOut => "the cast bar was longer than a line will be held for",
-        DropStage.Audience => "somebody else cast it, and Warcry only voices you",
+        DropStage.RateLimited => "other people's lines were arriving faster than the cap on the People tab allows",
+        DropStage.Audience => "you are not listening to whoever cast it — see the People tab",
         DropStage.NotPc => "not a player character",
         DropStage.NotAction => "not an action (an item, a mount, a status tick…)",
         _ => stage.ToString(),
@@ -213,6 +268,62 @@ public sealed partial class MainWindow
         }
 
         ImGui.TextUnformatted($"  Events seen   {this.plugin.Diag.TotalSeen}");
+    }
+
+    /// <summary>
+    /// What the plugin has silenced, and on what grounds.
+    /// </summary>
+    /// <remarks>
+    /// A suppression the user cannot see is indistinguishable from Warcry having broken
+    /// their game audio, which is why the last match is shown whole — path, group and how
+    /// far the emitter was from the caster it was attributed to.
+    /// </remarks>
+    private void DrawGruntDetail()
+    {
+        var g = this.plugin.Grunts;
+        var cfg = this.plugin.Config;
+
+        ImGui.TextUnformatted("Game grunts");
+
+        if (!g.Installed)
+        {
+            ImGui.TextUnformatted("  Hook          NOT INSTALLED - signature did not resolve.");
+            ImGui.TextDisabled("                Expected after a game patch. Nothing else is affected.");
+            return;
+        }
+
+        ImGui.TextUnformatted($"  Hook          {(g.Active ? "live" : "idle")} at 0x{g.HookAddress:X}");
+
+        if (g.Tripped)
+        {
+            ImGui.TextUnformatted("  State         TRIPPED - too many faults, passing everything through.");
+        }
+
+        var mode = cfg.Grunts switch
+        {
+            GruntMode.Always => "every attack grunt",
+            GruntMode.WhenVoiced => $"casters Warcry voices, for {cfg.GruntWindowSeconds:0.0}s",
+            _ => "nothing - the setting is off",
+        };
+
+        ImGui.TextUnformatted($"  Silencing     {mode}");
+        ImGui.TextUnformatted($"  Suppressed    {g.Suppressed}   ({g.ArmedCount} caster(s) armed now)");
+
+        if (g.LastPath.Length > 0)
+        {
+            var how = g.LastMatchDistance < 0f
+                ? "blanket"
+                : $"{g.LastMatchDistance:0.00}y from the caster";
+
+            // The age is what makes this checkable in game: press a mapped action and this
+            // has to read a fraction of a second, or the grunt you just heard was not ours
+            // to silence.
+            var age = (DateTime.Now - g.LastAt).TotalSeconds;
+            ImGui.TextDisabled(
+                $"                last: {g.LastPath}");
+            ImGui.TextDisabled(
+                $"                      group {g.LastSoundNumber}, {how}, {age:0.0}s ago");
+        }
     }
 
     private void DrawEngineDetail()
@@ -381,6 +492,24 @@ public sealed partial class MainWindow
             $"moves={nativeSink.Moves} driverMoves={nativeSink.DriverMoves} startsSeen={nativeSink.StartsSeen} " +
             $"released={nativeSink.Released} forced={nativeSink.Forced} orphaned={nativeSink.Orphaned}");
 
+        // "The game went quiet" and "a grunt slipped through" are both this line.
+        var grunts = this.plugin.Grunts;
+        sb.AppendLine(
+            $"gruntHook={grunts.Installed} active={grunts.Active} tripped={grunts.Tripped} " +
+            $"gruntMode={this.plugin.Config.Grunts} " +
+            $"window={this.plugin.Config.GruntWindowSeconds:0.0}s suppressed={grunts.Suppressed} " +
+            $"armed={grunts.ArmedCount} lastGroup={grunts.LastSoundNumber} lastDistance={grunts.LastMatchDistance:0.00}");
+
+        // Which tiers are on decides whether a "nothing plays" report is a bug at all, and
+        // the crowd numbers decide whether a "it goes quiet in raids" one is.
+        var cfg = this.plugin.Config;
+        sb.AppendLine(
+            $"audience={cfg.Audience} named={cfg.NamedPeople.Count} blocked={cfg.BlockedPeople.Count} " +
+            $"maxDistance={cfg.MaxDistanceYalms} nearby={this.plugin.Crowd.NearbyCount} " +
+            $"crowdScale={this.plugin.Crowd.CooldownScale:0.00} " +
+            $"tokens={this.plugin.Throttle.TokensAvailable}/{cfg.RateBurst} " +
+            $"activeJobs={this.plugin.Packs.ActiveJobs.Count}");
+
         var lp = Plugin.Objects.LocalPlayer;
         if (lp is not null)
         {
@@ -409,6 +538,8 @@ public sealed partial class MainWindow
             var ev = row.Event;
             sb.AppendLine(
                 $"{row.When:HH:mm:ss} {(ev.IsLocalPlayer ? "ME " : "   ")}" +
+                $"who={row.Audience}{(row.AudienceRefusal.Length > 0 ? $"(refused:{row.AudienceRefusal})" : string.Empty)} " +
+                $"dist={ev.Facts.Distance} " +
                 $"actionId={ev.ActionId}(\"{this.ActionName(ev.ActionId)}\") " +
                 $"cat={this.CategoryOf(ev.ActionId)} cast={this.CastSecondsOf(ev.ActionId):0.0}s " +
                 $"wasCasting={ev.WasCasting} castLeft={ev.CastRemaining:0.000} " +

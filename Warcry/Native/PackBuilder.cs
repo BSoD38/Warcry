@@ -26,6 +26,11 @@ namespace Warcry.Native;
 /// current job can actually trigger are warmed, plus job-agnostic ones. Switching jobs
 /// warms the new set; already-warm clips stay warm — resident memory is bounded by the
 /// jobs actually played this session, which is the best achievable.</para>
+/// <para>With remote casters admitted, "reachable" stops meaning one job. The active set is
+/// yours plus the jobs of the audible players around you, from <c>Gating.CrowdWatch</c> —
+/// still a bounded, earned set rather than "every job in the game". A stranger who walks up
+/// is warm within a second or two of arriving rather than on their first cast, and while the
+/// audience is self-only the set is exactly the one job it always was.</para>
 /// <para>The variant plan must enumerate exactly the keys <c>Plugin.OnCast</c> will ask
 /// for. Both build keys from the same primitives (<see cref="Plugin.VariantKey"/>,
 /// <see cref="CachedClip.QuantiseRate"/>), so a drift between them is a compile error or
@@ -53,9 +58,12 @@ public sealed class PackBuilder
     private readonly List<string> errors = [];
     private readonly Queue<ForgedClip> warmQueue = new();
 
+    /// <summary>Jobs that can currently trigger a mapping — yours plus the audience's.</summary>
+    private IReadOnlySet<uint> activeJobs = new HashSet<uint>();
+
     private string fingerprint = string.Empty;
     private long fingerprintChangedAt;
-    private uint lastJobId = uint.MaxValue;
+    private int lastJobsRevision = int.MinValue;
 
     public PackBuilder(
         IPluginLog log,
@@ -94,8 +102,11 @@ public sealed class PackBuilder
         public string Error { get; set; } = string.Empty;
     }
 
-    /// <summary>The job the last <see cref="Update"/> saw. 0 off-world.</summary>
+    /// <summary>Your own job, as of the last <see cref="Update"/>. 0 off-world.</summary>
     public uint CurrentJobId { get; private set; }
+
+    /// <summary>Every job a mapping could currently be triggered from. Never empty in game.</summary>
+    public IReadOnlySet<uint> ActiveJobs => this.activeJobs;
 
     public int PlannedCount => this.plan.Count;
 
@@ -117,15 +128,15 @@ public sealed class PackBuilder
         }
     }
 
-    /// <summary>Planned variants both reachable from the current job and warmed.</summary>
-    public int WarmForCurrentJob
+    /// <summary>Planned variants both reachable from an active job and warmed.</summary>
+    public int WarmForActiveJobs
     {
         get
         {
             var warm = 0;
             foreach (var (key, entry) in this.plan)
             {
-                if (this.IsReachable(entry, this.CurrentJobId) &&
+                if (this.IsReachable(entry) &&
                     this.forge.TryGetForged(key, out var clip) && clip is { WarmedAt: not 0 })
                 {
                     warm++;
@@ -136,15 +147,15 @@ public sealed class PackBuilder
         }
     }
 
-    /// <summary>Planned variants reachable from the current job, warm or not.</summary>
-    public int ReachableForCurrentJob
+    /// <summary>Planned variants reachable from an active job, warm or not.</summary>
+    public int ReachableForActiveJobs
     {
         get
         {
             var reachable = 0;
             foreach (var entry in this.plan.Values)
             {
-                if (this.IsReachable(entry, this.CurrentJobId))
+                if (this.IsReachable(entry))
                 {
                     reachable++;
                 }
@@ -240,11 +251,19 @@ public sealed class PackBuilder
 
     /// <summary>
     /// Per frame, on the game main thread, before the sink pumps. Detects mapping edits
-    /// (debounced re-apply) and job changes (warm the newly reachable set).
+    /// (debounced re-apply) and changes to the reachable job set (warm what is newly
+    /// reachable).
     /// </summary>
-    public void Update(uint currentJobId)
+    /// <param name="localJobId">Your own job, for labels. 0 off-world.</param>
+    /// <param name="jobs">Every job that could trigger a mapping right now.</param>
+    /// <param name="jobsRevision">
+    /// Bumped by the crowd scan only when <paramref name="jobs"/> actually changed, so an
+    /// unchanged crowd costs one integer compare per frame rather than a set comparison.
+    /// </param>
+    public void Update(uint localJobId, IReadOnlySet<uint> jobs, int jobsRevision)
     {
-        this.CurrentJobId = currentJobId;
+        this.CurrentJobId = localJobId;
+        this.activeJobs = jobs;
 
         // Automatic apply only when a native mode can use the result. The button on the
         // Sound pack tab works in any mode, for preparing a pack before switching.
@@ -271,10 +290,10 @@ public sealed class PackBuilder
             }
         }
 
-        if (currentJobId != this.lastJobId)
+        if (jobsRevision != this.lastJobsRevision)
         {
-            this.lastJobId = currentJobId;
-            this.QueueWarmablesFor(currentJobId);
+            this.lastJobsRevision = jobsRevision;
+            this.QueueWarmables();
         }
 
         // Paced: each warm-up is a real (muted) PlaySound and briefly holds a pool slot.
@@ -294,7 +313,7 @@ public sealed class PackBuilder
     /// <remarks>
     /// Unplanned variants — auditions, the test tone, anything from before the builder —
     /// warm unconditionally, which is the pre-builder behaviour. Planned ones warm only
-    /// when the current job can reach them; the rest wait for a job switch.
+    /// when an active job can reach them; the rest wait for the job set to change.
     /// </remarks>
     public bool ShouldWarmNow(ForgedClip clip)
     {
@@ -303,47 +322,50 @@ public sealed class PackBuilder
             return true;
         }
 
-        return this.IsReachable(entry, this.CurrentJobId);
+        return this.IsReachable(entry);
     }
 
     private bool PlanEntryFor(ForgedClip clip, out PlannedVariant entry)
         => this.plan.TryGetValue(clip.VariantKey, out entry!);
 
     /// <summary>
-    /// Job-agnostic variants are always reachable. Job-specific ones need a known job
-    /// with at least one of the rule's actions in its kit — off-world (job 0) nothing
-    /// job-specific warms, because there is nobody to cast it.
+    /// Job-agnostic variants are always reachable. Job-specific ones need at least one
+    /// active job with one of the rule's actions in its kit — with no active job (off-world,
+    /// nobody audible nearby) nothing job-specific warms, because there is nobody to cast it.
     /// </summary>
-    private bool IsReachable(PlannedVariant entry, uint jobId)
+    private bool IsReachable(PlannedVariant entry)
     {
         if (entry.ActionIds.Count == 0)
         {
             return true;
         }
 
-        if (jobId == 0)
+        foreach (var jobId in this.activeJobs)
         {
-            return false;
-        }
-
-        foreach (var actionId in entry.ActionIds)
-        {
-            if (this.jobs.ActionBelongsToJob(actionId, jobId))
+            if (jobId == 0)
             {
-                return true;
+                continue;
+            }
+
+            foreach (var actionId in entry.ActionIds)
+            {
+                if (this.jobs.ActionBelongsToJob(actionId, jobId))
+                {
+                    return true;
+                }
             }
         }
 
         return false;
     }
 
-    private void QueueWarmablesFor(uint jobId)
+    private void QueueWarmables()
     {
         this.warmQueue.Clear();
 
         foreach (var clip in this.forge.UnwarmedClips())
         {
-            if (!this.PlanEntryFor(clip, out var entry) || this.IsReachable(entry, jobId))
+            if (!this.PlanEntryFor(clip, out var entry) || this.IsReachable(entry))
             {
                 this.warmQueue.Enqueue(clip);
             }
@@ -352,9 +374,9 @@ public sealed class PackBuilder
         if (this.warmQueue.Count > 0)
         {
             this.log.Information(
-                "PackBuilder: warming {Count} clip(s) for job {Job}",
+                "PackBuilder: warming {Count} clip(s) for {Jobs} active job(s)",
                 this.warmQueue.Count,
-                jobId == 0 ? "(none)" : this.jobs.JobLabel(jobId));
+                this.activeJobs.Count);
         }
     }
 

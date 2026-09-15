@@ -53,17 +53,17 @@ public sealed partial class MainWindow
             ImGui.TextUnformatted(
                 $"Preparing clips for the game engine: {packs.CompiledCount} of {packs.PlannedCount} done.");
         }
-        else if (packs.WarmForCurrentJob < packs.ReachableForCurrentJob)
+        else if (packs.WarmForActiveJobs < packs.ReachableForActiveJobs)
         {
             ImGui.TextDisabled(
-                $"All {packs.PlannedCount} clip(s) prepared. Loading the {packs.ReachableForCurrentJob} " +
-                $"that {jobLabel} can trigger.");
+                $"All {packs.PlannedCount} clip(s) prepared. Loading the {packs.ReachableForActiveJobs} " +
+                $"that {this.ReachableFrom(jobLabel)} can trigger.");
         }
         else
         {
             ImGui.TextDisabled(
-                $"All {packs.PlannedCount} clip(s) ready. {packs.ReachableForCurrentJob} of them can be " +
-                $"triggered by {jobLabel}.");
+                $"All {packs.PlannedCount} clip(s) ready. {packs.ReachableForActiveJobs} of them can be " +
+                $"triggered by {this.ReachableFrom(jobLabel)}.");
         }
 
         if (ImGui.SmallButton("Prepare clips now"))
@@ -99,7 +99,8 @@ public sealed partial class MainWindow
         var (totalBytes, warmedBytes) = forge.ByteTotals();
         ImGui.TextUnformatted(
             $"  Variants      {packs.PlannedCount} planned, {packs.CompiledCount} compiled, " +
-            $"{packs.ReachableForCurrentJob} reachable from {jobLabel}, {packs.WarmForCurrentJob} warm");
+            $"{packs.ReachableForActiveJobs} reachable from {this.ReachableFrom(jobLabel)}, " +
+            $"{packs.WarmForActiveJobs} warm");
         ImGui.TextUnformatted(
             $"  Memory        {totalBytes / 1024.0:0} KB on disk, ~{warmedBytes / 1024.0:0} KB resident");
         ImGui.TextDisabled("                loaded containers cannot be freed until the game exits");
@@ -156,5 +157,16 @@ public sealed partial class MainWindow
         }
 
         ImGui.TreePop();
+    }
+
+    /// <summary>
+    /// Who the reachable count is counted for. While you are the only audience that is just
+    /// your job, which is what this used to say unconditionally; once other people can be
+    /// heard, their jobs are reachable too and saying "your job" would understate it.
+    /// </summary>
+    private string ReachableFrom(string jobLabel)
+    {
+        var others = this.plugin.Packs.ActiveJobs.Count - 1;
+        return others > 0 ? $"{jobLabel} and {others} nearby job(s)" : jobLabel;
     }
 }

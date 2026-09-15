@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Warcry.Clips;
 using Warcry.Profiles;
@@ -34,6 +35,11 @@ public sealed partial class MainWindow
             ImGui.TextDisabled("Import a sound file on the Clips tab first, then come back here.");
             return;
         }
+
+        // ---- which set, and who it plays for ----
+        this.DrawMappingSetBar(store);
+
+        ImGui.Separator();
 
         // ---- job filter ----
         var currentJob = CurrentJobId();
@@ -236,7 +242,7 @@ public sealed partial class MainWindow
 
         if (ImGui.Button("Assign"))
         {
-            var profile = store.GetOrCreateDefault();
+            var profile = this.ActiveProfile(store);
             store.MapClipToAction(
                 profile,
                 this.selectedActionId,
@@ -337,7 +343,12 @@ public sealed partial class MainWindow
         {
             if (store.Profiles.Count > 1)
             {
-                ImGui.TextDisabled($"{profile.Name}  {profile.Match.Describe(RaceName, TribeName)}");
+                // Marked rather than filtered: seeing every set at once is how you notice
+                // that two of them cover the same action for overlapping people, which is
+                // the mistake multiple sets makes easy to make.
+                var active = profile.Id == this.selectedProfileId;
+                ImGui.TextDisabled(
+                    $"{(active ? "> " : "  ")}{profile.Name}  {profile.Match.Describe(RaceName, TribeName)}");
             }
 
             // Sorted for DISPLAY only, on a materialised copy. The backing list is
@@ -363,7 +374,10 @@ public sealed partial class MainWindow
                 }
 
                 ImGui.SameLine();
-                ImGui.TextUnformatted($"{name}  #{actionId}");
+                if (this.DrawRuleActionName(name, actionId))
+                {
+                    this.selectedActionId = actionId;
+                }
 
                 var extraIds = rule.When.ActionIds.Count - 1;
                 if (extraIds > 0 || rule.When.ActionNames.Count > 0)
@@ -517,6 +531,44 @@ public sealed partial class MainWindow
         }
 
         ImGui.EndChild();
+    }
+
+    /// <summary>
+    /// A rule's action name, drawn as a link back into the picker at the top of the tab
+    /// so an existing mapping can be re-selected without hunting for it again.
+    /// Returns true on the frame it is clicked.
+    /// </summary>
+    private bool DrawRuleActionName(string name, uint actionId)
+    {
+        // Rules that match by name or category carry no id, so there is nothing to load
+        // into the picker — those stay plain text.
+        if (actionId == 0)
+        {
+            ImGui.TextUnformatted(name);
+            return false;
+        }
+
+        ImGui.TextUnformatted($"{name}  #{actionId}");
+
+        if (!ImGui.IsItemHovered())
+        {
+            return false;
+        }
+
+        // Text does not look clickable, so underline it under the cursor. Hover state is
+        // valid for the item just submitted, so the row drawn this frame is the one
+        // underlined — no frame lag.
+        var min = ImGui.GetItemRectMin();
+        var max = ImGui.GetItemRectMax();
+        ImGui.GetWindowDrawList().AddLine(
+            new Vector2(min.X, max.Y),
+            new Vector2(max.X, max.Y),
+            ImGui.GetColorU32(ImGuiCol.Text));
+
+        ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+        ImGui.SetTooltip("Click to load this action into the picker at the top.");
+
+        return ImGui.IsItemClicked();
     }
 
     /// <summary>

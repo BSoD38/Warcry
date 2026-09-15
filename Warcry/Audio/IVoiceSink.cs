@@ -58,6 +58,16 @@ public readonly struct VoiceRequest
 
     public readonly uint CasterEntityId;
 
+    /// <summary>
+    /// Is this your own line? Only the concurrency reservation reads it.
+    /// </summary>
+    /// <remarks>
+    /// Carried explicitly rather than inferred from <see cref="CasterEntityId"/> so the
+    /// audio layer never has to ask the game who the local player is — and so an audition,
+    /// which has no caster at all, can still claim the reservation.
+    /// </remarks>
+    public readonly bool IsSelf;
+
     public VoiceRequest(
         Func<float, ISampleProvider> createSource,
         string variantKey,
@@ -65,7 +75,8 @@ public readonly struct VoiceRequest
         Vector3 position,
         byte soundCategory,
         float gain,
-        uint casterEntityId)
+        uint casterEntityId,
+        bool isSelf)
     {
         this.CreateSource = createSource;
         this.VariantKey = variantKey;
@@ -74,6 +85,7 @@ public readonly struct VoiceRequest
         this.SoundCategory = soundCategory;
         this.Gain = gain;
         this.CasterEntityId = casterEntityId;
+        this.IsSelf = isSelf;
     }
 }
 

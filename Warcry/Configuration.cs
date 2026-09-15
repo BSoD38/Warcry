@@ -4,6 +4,7 @@ using Dalamud.Configuration;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using Warcry.Audio;
+using Warcry.Game;
 
 namespace Warcry;
 
@@ -26,7 +27,7 @@ public sealed class Configuration : IPluginConfiguration
     /// The schema version this build writes. Bump it and add a step to
     /// <see cref="Migrate"/> whenever a field changes meaning or goes away.
     /// </summary>
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 5;
 
     /// <summary>Schema version. Bump and add an ordered migration step when fields change.</summary>
     public int Version { get; set; } = CurrentVersion;
@@ -100,6 +101,31 @@ public sealed class Configuration : IPluginConfiguration
     /// </summary>
     public bool WaitForCastToFinish { get; set; } = true;
 
+    // ---- the game's own battle grunt (M10) ----
+
+    /// <summary>
+    /// How much of the game's own battle grunt to silence.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="GruntMode.Off"/> by default, and no migration step raises it: an update
+    /// that changes what the game sounds like without being asked is the same nasty
+    /// surprise as one that starts voicing strangers. Damage-taken and death grunts are
+    /// never touched in any mode — see <see cref="Audio.GruntSuppressor"/>.
+    /// </remarks>
+    public GruntMode Grunts { get; set; } = GruntMode.Off;
+
+    /// <summary>
+    /// How long after a cast the game's grunt for it stays suppressed.
+    /// Only <see cref="GruntMode.WhenVoiced"/> reads it.
+    /// </summary>
+    /// <remarks>
+    /// The grunt is animation-driven and lands 5-1071 ms after snapshot, fixed per action
+    /// (docs/native-spike.md), so nothing shorter than about a second covers the slow end.
+    /// Exposed rather than fixed because the cost of a long window is eating the *next*
+    /// action's grunt on a fast rotation.
+    /// </remarks>
+    public float GruntWindowSeconds { get; set; } = 1.5f;
+
     // ---- gates (M6) ----
 
     public bool DisableInCutscenes { get; set; } = true;
@@ -113,10 +139,86 @@ public sealed class Configuration : IPluginConfiguration
     /// <summary>TerritoryType ids where nothing plays. Useful for hub cities.</summary>
     public HashSet<uint> BlockedTerritories { get; set; } = [];
 
-    // ---- throttle (M6) ----
+    // ---- audience (M9) ----
+
+    /// <summary>
+    /// Whose actions are heard at all. Anything not in this set is a counted
+    /// <see cref="DropStage.Audience"/> drop.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <see cref="AudienceBucket.Self"/>, which is what every install before
+    /// this feature did. Widening it is always the user's explicit act — a plugin that
+    /// starts voicing strangers after an update would be a nasty surprise.
+    /// </remarks>
+    public AudienceBucket Audience { get; set; } = AudienceBucket.Self;
+
+    /// <summary>
+    /// Players listed by hand. Heard when <see cref="AudienceBucket.Named"/> is enabled,
+    /// and separately targetable by a profile.
+    /// </summary>
+    public List<NamedPlayer> NamedPeople { get; set; } = [];
+
+    /// <summary>Players who never play a line, whatever else would have matched.</summary>
+    /// <remarks>Checked before every bucket except <see cref="AudienceBucket.Self"/>.</remarks>
+    public List<NamedPlayer> BlockedPeople { get; set; } = [];
+
+    /// <summary>
+    /// Yalms past which someone else's line is not played. 0 disables the gate.
+    /// </summary>
+    /// <remarks>
+    /// Not the same job as the engine's falloff, which only makes a distant line quiet.
+    /// This stops it being requested at all, so it costs no voice from the concurrency cap
+    /// and no slot in the game's shared sound pool. Never applied to your own actions.
+    /// </remarks>
+    public int MaxDistanceYalms { get; set; } = 30;
+
+    /// <summary>Volume trim applied to everyone but you.</summary>
+    public float OtherPlayerGain { get; set; } = 0.8f;
+
+    // ---- throttle (M6, per-audience at M9) ----
 
     /// <summary>Seconds before the same caster can trigger another line. 0 disables.</summary>
     public float SelfCooldownSeconds { get; set; } = 2.0f;
+
+    /// <summary>Per-caster cooldown for someone on your named list.</summary>
+    public float NamedCooldownSeconds { get; set; } = 3.0f;
+
+    /// <summary>Per-caster cooldown for party, alliance and friends.</summary>
+    public float PartyCooldownSeconds { get; set; } = 4.0f;
+
+    /// <summary>Per-caster cooldown for everyone else.</summary>
+    public float OtherCooldownSeconds { get; set; } = 6.0f;
+
+    /// <summary>
+    /// Stretch other people's cooldowns as the crowd grows. See docs/PLAN.md 5.7 stage 3.
+    /// </summary>
+    /// <remarks>
+    /// Your own lines are never scaled. The whole point is that a hub city or a 48-player
+    /// alliance raid quietens the strangers around you without making you inaudible.
+    /// </remarks>
+    public bool ScaleWithCrowd { get; set; } = true;
+
+    /// <summary>Nearby audience members above which cooldowns start stretching.</summary>
+    public int SoftCrowdLimit { get; set; } = 12;
+
+    /// <summary>Ceiling on the crowd multiplier, so a full raid cannot mute everyone forever.</summary>
+    public float MaxCrowdScale { get; set; } = 6.0f;
+
+    /// <summary>
+    /// Cap the total rate of other people's lines. See docs/PLAN.md 5.7 stage 4.
+    /// </summary>
+    /// <remarks>
+    /// The per-caster cooldown bounds one person; this bounds the sum of them. Requests are
+    /// dropped rather than queued — a voiceline that arrives late is worse than one that
+    /// never arrives.
+    /// </remarks>
+    public bool LimitTotalRate { get; set; } = true;
+
+    /// <summary>How many other people's lines may fire back to back before the rate bites.</summary>
+    public int RateBurst { get; set; } = 4;
+
+    /// <summary>Seconds to earn back one line of burst.</summary>
+    public float RateRefillSeconds { get; set; } = 1.5f;
 
     /// <summary>Auto-attacks fire constantly and are never worth a voiceline.</summary>
     public bool SkipAutoAttacks { get; set; } = true;
@@ -230,6 +332,17 @@ public sealed class Configuration : IPluginConfiguration
         // is now unconditional. Same shape as v3 — the stored bool is dropped on load, and
         // anyone who had it off gets working following rather than a silently inert mode.
 
+        if (this.Version < 5)
+        {
+            // v5 (2026-08-24): the audience filter went live. Everything before it was
+            // self-only, and that is what the user consented to, so an upgrade must not
+            // start voicing anyone new. The profiles they already have become "everyone"
+            // targets — see ProfileMatch.Audience, which defaults that way for exactly
+            // this reason — but the global filter stays shut until they open it.
+            this.Audience = AudienceBucket.Self;
+            this.Version = 5;
+        }
+
         this.Version = CurrentVersion;
         log.Information("Warcry: migrated configuration from version {From} to {To}.", from, this.Version);
         return true;
@@ -249,9 +362,53 @@ public sealed class Configuration : IPluginConfiguration
         this.BlockedTerritories ??= Fix<HashSet<uint>>(nameof(this.BlockedTerritories));
         this.MutedActionIds ??= Fix<HashSet<uint>>(nameof(this.MutedActionIds));
         this.ObservedActionIds ??= Fix<List<uint>>(nameof(this.ObservedActionIds));
+        this.NamedPeople ??= Fix<List<NamedPlayer>>(nameof(this.NamedPeople));
+        this.BlockedPeople ??= Fix<List<NamedPlayer>>(nameof(this.BlockedPeople));
+
+        // A null entry inside the list is a different failure from a null list, and it
+        // would throw from inside the filter's rebuild rather than on load.
+        repairs += this.NamedPeople.RemoveAll(p => p is null || string.IsNullOrWhiteSpace(p.Name));
+        repairs += this.BlockedPeople.RemoveAll(p => p is null || string.IsNullOrWhiteSpace(p.Name));
 
         this.MasterGain = Clamp(this.MasterGain, 0f, 4f, 1f, nameof(this.MasterGain));
+        this.OtherPlayerGain = Clamp(this.OtherPlayerGain, 0f, 4f, 0.8f, nameof(this.OtherPlayerGain));
         this.SelfCooldownSeconds = Clamp(this.SelfCooldownSeconds, 0f, 60f, 2f, nameof(this.SelfCooldownSeconds));
+        this.NamedCooldownSeconds = Clamp(this.NamedCooldownSeconds, 0f, 60f, 3f, nameof(this.NamedCooldownSeconds));
+        this.PartyCooldownSeconds = Clamp(this.PartyCooldownSeconds, 0f, 60f, 4f, nameof(this.PartyCooldownSeconds));
+        this.OtherCooldownSeconds = Clamp(this.OtherCooldownSeconds, 0f, 60f, 6f, nameof(this.OtherCooldownSeconds));
+        this.MaxCrowdScale = Clamp(this.MaxCrowdScale, 1f, 20f, 6f, nameof(this.MaxCrowdScale));
+        this.RateRefillSeconds = Clamp(this.RateRefillSeconds, 0.1f, 30f, 1.5f, nameof(this.RateRefillSeconds));
+        this.GruntWindowSeconds = Clamp(this.GruntWindowSeconds, 0.1f, 5f, 1.5f, nameof(this.GruntWindowSeconds));
+
+        // An unknown bit here would be a bucket this build cannot classify into, so a cast
+        // could never land in it and the user would see a tier they can never hear.
+        if ((this.Audience & ~AudienceBucket.Anyone) != 0)
+        {
+            log.Warning("Warcry: Audience had unknown bits ({Value}); masked to the known set.", this.Audience);
+            this.Audience &= AudienceBucket.Anyone;
+            repairs++;
+        }
+
+        if (this.MaxDistanceYalms is < 0 or > 255)
+        {
+            log.Warning("Warcry: MaxDistanceYalms was {Value}; clamped into 0-255.", this.MaxDistanceYalms);
+            this.MaxDistanceYalms = Math.Clamp(this.MaxDistanceYalms, 0, 255);
+            repairs++;
+        }
+
+        if (this.SoftCrowdLimit is < 1 or > 100)
+        {
+            log.Warning("Warcry: SoftCrowdLimit was {Value}; clamped into 1-100.", this.SoftCrowdLimit);
+            this.SoftCrowdLimit = Math.Clamp(this.SoftCrowdLimit, 1, 100);
+            repairs++;
+        }
+
+        if (this.RateBurst is < 1 or > 32)
+        {
+            log.Warning("Warcry: RateBurst was {Value}; clamped into 1-32.", this.RateBurst);
+            this.RateBurst = Math.Clamp(this.RateBurst, 1, 32);
+            repairs++;
+        }
 
         if (!Enum.IsDefined(this.Sink))
         {
@@ -264,6 +421,15 @@ public sealed class Configuration : IPluginConfiguration
         {
             log.Warning("Warcry: VoicePosition was {Value}; reset to Follow.", this.VoicePosition);
             this.VoicePosition = VoicePositionMode.Follow;
+            repairs++;
+        }
+
+        // Reset to Off rather than to a suppressing mode: an unreadable value must not be
+        // resolved into silencing the game's audio.
+        if (!Enum.IsDefined(this.Grunts))
+        {
+            log.Warning("Warcry: Grunts was {Value}; reset to Off.", this.Grunts);
+            this.Grunts = GruntMode.Off;
             repairs++;
         }
 

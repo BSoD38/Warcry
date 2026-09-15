@@ -43,8 +43,22 @@ public readonly struct CastEvent
     public readonly byte SoundCategory;
 
     public readonly CasterKey Caster;
-    public readonly bool IsLocalPlayer;
     public readonly TriggerPhase Phase;
+
+    /// <summary>
+    /// Who the caster is to you, captured in the detour so the audience filter never has
+    /// to touch the game object again.
+    /// </summary>
+    /// <remarks>
+    /// The name arrives hashed rather than as a string: the named-player list is checked on
+    /// every cast, and <c>NameString</c> allocates. The relation bits are read through the
+    /// ClientStructs properties rather than by masking <c>RelationFlags</c> here, because
+    /// the bit layout is the client's and a struct update should be free to move it.
+    /// </remarks>
+    public readonly CasterFacts Facts;
+
+    /// <summary>Was this you? The 32-bit entity id compare, never SourceSequence.</summary>
+    public bool IsLocalPlayer => this.Facts.IsSelf;
 
     /// <summary>Was the caster's cast bar still running at snapshot?</summary>
     public readonly bool WasCasting;
@@ -99,9 +113,10 @@ public readonly struct CastEvent
         uint casterEntityId, nint casterAddress, uint actionId,
         byte animationVariation, uint globalSequence, ushort sourceSequence,
         byte rawActionType, byte numTargets, Vector3 position, byte soundCategory,
-        CasterKey caster, bool isLocalPlayer, TriggerPhase phase,
+        CasterKey caster, in CasterFacts facts, TriggerPhase phase,
         bool wasCasting, float castCurrent, float castTotal)
     {
+        this.Facts = facts;
         this.WasCasting = wasCasting;
         this.CastCurrent = castCurrent;
         this.CastTotal = castTotal;
@@ -116,7 +131,6 @@ public readonly struct CastEvent
         this.Position = position;
         this.SoundCategory = soundCategory;
         this.Caster = caster;
-        this.IsLocalPlayer = isLocalPlayer;
         this.Phase = phase;
     }
 }

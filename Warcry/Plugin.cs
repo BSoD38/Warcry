@@ -34,6 +34,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IGameConfig            GameConfig  { get; private set; } = null!;
     [PluginService] internal static ICommandManager        Commands    { get; private set; } = null!;
     [PluginService] internal static IDragDropManager       DragDrop    { get; private set; } = null!;
+    [PluginService] internal static ITargetManager         Targets     { get; private set; } = null!;
 
     public Configuration Config { get; }
 
@@ -53,6 +54,12 @@ public sealed class Plugin : IDalamudPlugin
 
     public Gates Gates { get; }
 
+    /// <summary>Whose actions are heard. The caster seam — see docs/PLAN.md 5.3.</summary>
+    public AudienceFilter Audience { get; }
+
+    /// <summary>Once-a-second read of who is nearby and what they are playing.</summary>
+    public CrowdWatch Crowd { get; }
+
     public Throttle Throttle { get; }
 
     public IVoiceSink Sink { get; }
@@ -70,6 +77,9 @@ public sealed class Plugin : IDalamudPlugin
     public PackBuilder Packs { get; }
 
     public PlaybackScheduler Scheduler { get; }
+
+    /// <summary>Keeps the game's own battle grunt from doubling up with ours.</summary>
+    public GruntSuppressor Grunts { get; }
 
     public PenumbraBridge Penumbra { get; }
 
@@ -115,7 +125,9 @@ public sealed class Plugin : IDalamudPlugin
         this.Profiles = new ProfileStore(PluginInterface.GetPluginConfigDirectory(), Log);
         this.Resolver = new ClipResolver(this.Profiles, Data);
         this.Gates = new Gates(this.Config);
-        this.Throttle = new Throttle(this.Config);
+        this.Audience = new AudienceFilter(this.Config);
+        this.Crowd = new CrowdWatch(this.Config, Objects, this.Audience);
+        this.Throttle = new Throttle(this.Config, this.Audience, this.Crowd);
 
         this.Penumbra = new PenumbraBridge(PluginInterface, Log);
 
@@ -124,11 +136,15 @@ public sealed class Plugin : IDalamudPlugin
             this.ObservedActions.Add(id);
         }
 
+        // Shared: the sink follows a sounding voice with it, the suppressor keeps its armed
+        // windows current with it. One object-table seam, not two.
+        var locator = new CasterLocator(Objects);
+
         this.Forge = new ScdForge(Data, Log, this.Penumbra, PluginInterface.GetPluginConfigDirectory());
         this.Composite = new CompositeVoiceSink(
             Log,
             this.Config,
-            new NativeVoiceSink(Log, this.Config, this.Forge, new CasterLocator(Objects)),
+            new NativeVoiceSink(Log, this.Config, this.Forge, locator),
             new ManagedVoiceSink(Log, this.Volume, this.Config));
 
         this.Jobs = new JobIndex(Data);
@@ -139,6 +155,10 @@ public sealed class Plugin : IDalamudPlugin
         this.Scheduler = new PlaybackScheduler(
             this.Sink,
             () => this.Diag.Drop(DropStage.SinkRefused));
+
+        // Installed disabled: PlaySound is far too hot to sit in while the feature is off.
+        // Update() is what turns it on and off from the config.
+        this.Grunts = new GruntSuppressor(Interop, Log, this.Config, locator);
 
         // Installs the hook. Failure is logged and left inert — never thrown.
         this.Watcher = new ActionWatcher(Interop, Log, this.VoiceSlots, () => PlayerState.EntityId, this.OnCast);
@@ -176,7 +196,14 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        this.Diag.Record(new DiagRow(DateTime.Now, in ev, casterName, drop));
+        // Classified before the row is recorded, so a cast that goes no further still says
+        // who it was from and why it was not heard.
+        var verdict = drop == DropStage.None
+            ? this.Audience.Classify(in ev.Facts)
+            : AudienceVerdict.Unclassified;
+
+        this.Diag.Record(new DiagRow(
+            DateTime.Now, in ev, casterName, drop, verdict.Primary, verdict.Refusal));
 
         if (ev.IsLocalPlayer && drop == DropStage.None)
         {
@@ -202,9 +229,11 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        // v1 is self-only. The audience filter seam replaces this at M9.
-        if (!ev.IsLocalPlayer)
+        // The caster seam. Whose actions are heard is decided here and nowhere else, so a
+        // refusal is a counted drop with a reason rather than an unexplained silence.
+        if (!verdict.Admitted)
         {
+            this.Diag.Drop(DropStage.Audience);
             return;
         }
 
@@ -218,14 +247,18 @@ public sealed class Plugin : IDalamudPlugin
 
         var actionKey = this.Resolver.GetActionKey(ev.ActionId);
 
-        if (!this.Throttle.Admit(in ev, in actionKey, out var throttleStage))
+        if (!this.Throttle.Admit(in ev, in actionKey, verdict.Primary, out var throttleStage))
         {
             this.Diag.Drop(throttleStage);
             return;
         }
 
-        // Which clip, for this caster, for this action.
-        var resolved = this.Resolver.Resolve(in ev.Caster, in actionKey);
+        // Which clip, for this caster, for this action. The membership set goes in rather
+        // than the primary bucket: a profile aimed at your party has to fire for a party
+        // member who is also on your friend list.
+        var who = new CasterIdentity(
+            ev.Caster, verdict.Membership, ev.Facts.NameHash, ev.Facts.HomeWorld);
+        var resolved = this.Resolver.Resolve(in who, in actionKey);
 
         Func<float, NAudio.Wave.ISampleProvider> createSource;
         string variantKey;
@@ -269,6 +302,11 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        // Applied here rather than inside the resolver so it lands on the fallback tone
+        // too: "other people are too loud" has to be fixable in one place whether or not
+        // the action they used happens to be mapped.
+        gain *= this.Audience.GainFor(verdict.Primary);
+
         var request = new VoiceRequest(
             createSource: createSource,
             variantKey: variantKey,
@@ -276,7 +314,8 @@ public sealed class Plugin : IDalamudPlugin
             position: ev.Position,
             soundCategory: ev.SoundCategory,
             gain: gain,
-            casterEntityId: ev.CasterEntityId);
+            casterEntityId: ev.CasterEntityId,
+            isSelf: ev.IsLocalPlayer);
 
         // The measurement gates itself: an instant has no cast bar, so CastRemaining is 0
         // and this dispatches immediately. Only real casts get held back, by exactly the
@@ -284,8 +323,15 @@ public sealed class Plugin : IDalamudPlugin
         var delay = this.Config.WaitForCastToFinish ? ev.CastRemaining : 0f;
         if (this.Scheduler.Schedule(in request, delay, out var refusal))
         {
-            // Stamped on success only, so an unmapped action does not eat the window.
-            this.Throttle.Mark(ev.CasterEntityId);
+            // Stamped on success only, so an unmapped action does not eat the window —
+            // nor, for anyone but you, a token from the global rate cap.
+            this.Throttle.Mark(ev.CasterEntityId, verdict.Primary);
+
+            // Armed at snapshot rather than at playback, and deliberately: the game's grunt
+            // is animation-driven, 5-1071 ms after this point, so it can land well before
+            // our own line finishes waiting out the cast bar. Arming later would miss the
+            // fast half of that range. Nothing is armed for a cast we are not voicing.
+            this.Grunts.Arm(ev.CasterEntityId, ev.Position);
         }
         else
         {
@@ -313,11 +359,20 @@ public sealed class Plugin : IDalamudPlugin
         this.Volume.Update(this.elapsed);
         this.Scheduler.Update();
 
+        // Before the builder: the crowd scan is what tells it which jobs are reachable now,
+        // and it self-throttles to 1 Hz (and to nothing at all while you are the only
+        // audience).
+        this.Crowd.Update(this.elapsed, this.CachedJobId);
+
         // Before the sink pumps: the builder's job answer is what the sink's warm gate
         // consults for anything registered this frame.
-        this.Packs.Update(this.CachedJobId);
+        this.Packs.Update(this.CachedJobId, this.Crowd.Jobs, this.Crowd.Revision);
 
         this.Sink.Update();
+
+        // Follows the config toggles, keeps armed positions current and retires expired
+        // windows. The detour itself never reads the object table.
+        this.Grunts.Update();
 
         if (this.observedDirty && this.elapsed >= this.nextObservedFlush)
         {
@@ -347,6 +402,14 @@ public sealed class Plugin : IDalamudPlugin
         this.Scheduler.CancelAll();
         this.Sink.StopAll();
         this.Throttle.Clear();
+
+        // Entity ids are reassigned across a zone change, so a surviving window would
+        // silence a stranger who happens to inherit one.
+        this.Grunts.Clear();
+
+        // Everyone who was nearby is gone, so the crowd count and the job set it implies
+        // are both stale. Left alone, a hub city's scaling would follow you into a dungeon.
+        this.Crowd.Reset();
     }
 
     private void ToggleMainUi() => this.mainWindow.IsOpen = !this.mainWindow.IsOpen;
@@ -386,6 +449,12 @@ public sealed class Plugin : IDalamudPlugin
         {
             return "\"Play voicelines\" is off. Actions are still detected, and the Events tab " +
                    "keeps filling, but nothing is played.";
+        }
+
+        if (this.Config.Audience == Game.AudienceBucket.None)
+        {
+            return "Nobody is selected on the People tab — not even you — so every action is " +
+                   "detected and then discarded.";
         }
 
         if (!this.Watcher.Installed)
@@ -449,6 +518,24 @@ public sealed class Plugin : IDalamudPlugin
         var noClip = this.Diag.DropCount(DropStage.NoClip);
         var throttled = this.Diag.DropCount(DropStage.Throttle);
         var sinkRefused = this.Diag.DropCount(DropStage.SinkRefused);
+        var notListening = this.Diag.DropCount(DropStage.Audience);
+        var rateLimited = this.Diag.DropCount(DropStage.RateLimited);
+
+        // Checked before the rest because it is the one that fires when your own actions
+        // are switched off but somebody else's are on: everything else here would then be
+        // reporting on events that were never yours to begin with.
+        if ((this.Config.Audience & Game.AudienceBucket.Self) == 0)
+        {
+            return $"\"Me\" is off on the People tab, so your own actions never play. " +
+                   $"{notListening} action(s) have been skipped for not being from someone you listen to.";
+        }
+
+        if (rateLimited > 0 && rateLimited >= throttled && rateLimited >= noClip)
+        {
+            return $"Nothing is blocking playback, but {rateLimited} of other people's line(s) arrived " +
+                   "faster than the rate cap on the People tab allows and were dropped. Raise " +
+                   "\"lines in a row\", shorten the refill, or listen to fewer people.";
+        }
 
         if (noClip > 0 && noClip >= throttled && noClip >= sinkRefused)
         {
@@ -517,7 +604,8 @@ public sealed class Plugin : IDalamudPlugin
             position: lp?.Position ?? System.Numerics.Vector3.Zero,
             soundCategory: 0, // Player
             gain: 1f,
-            casterEntityId: PlayerState.EntityId);
+            casterEntityId: PlayerState.EntityId,
+            isSelf: true);
 
         if (!this.Scheduler.Schedule(in request, 0f, out _))
         {
@@ -592,7 +680,8 @@ public sealed class Plugin : IDalamudPlugin
             position: lp?.Position ?? System.Numerics.Vector3.Zero,
             soundCategory: 0,
             gain: 1f,
-            casterEntityId: PlayerState.EntityId);
+            casterEntityId: PlayerState.EntityId,
+            isSelf: true);
 
         if (!this.Composite.Managed.TryPlay(in request))
         {
@@ -604,6 +693,10 @@ public sealed class Plugin : IDalamudPlugin
     {
         // Order matters: stop producing events before tearing down consumers.
         this.Watcher.Dispose();
+
+        // Unhooked here rather than left to the finaliser: while this is installed the game
+        // cannot play a battle grunt without going through us.
+        this.Grunts.Dispose();
 
         Framework.Update -= this.OnFrameworkUpdate;
         ClientState.TerritoryChanged -= this.OnTerritoryChanged;

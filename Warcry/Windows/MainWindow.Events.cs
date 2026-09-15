@@ -1,4 +1,5 @@
 using Dalamud.Bindings.ImGui;
+using Warcry.Game;
 
 namespace Warcry.Windows;
 
@@ -32,7 +33,11 @@ public sealed partial class MainWindow
         ImGui.Checkbox("Only me", ref this.onlyMe);
         if (ImGui.IsItemHovered())
         {
-            ImGui.SetTooltip("Hide actions used by anyone else. Warcry only voices you, so this is usually what you want.");
+            ImGui.SetTooltip(
+                "Hide actions used by anyone else.\n\n" +
+                "Leave it off while setting up who you hear: other people's rows are where\n" +
+                "the People tab's decisions show up, and hovering a name says what they are\n" +
+                "to you.");
         }
 
         ImGui.SameLine();
@@ -111,6 +116,18 @@ public sealed partial class MainWindow
             else
             {
                 ImGui.TextUnformatted(string.IsNullOrEmpty(row.CasterName) ? $"0x{ev.CasterEntityId:X8}" : row.CasterName);
+            }
+
+            // What they are to you, and why that was or was not enough. Without this a
+            // stranger's row and a party member's row are indistinguishable, and "not
+            // listening" gives no clue which switch on the People tab would fix it.
+            if (row.Audience != AudienceBucket.None && ImGui.IsItemHovered())
+            {
+                var tier = Audience.Label(row.Audience);
+                ImGui.SetTooltip(row.AudienceRefusal.Length > 0
+                    ? $"{tier} — not heard: {row.AudienceRefusal}.\nThe People tab is where that is decided."
+                    : $"{tier}, and you are listening to them."
+                      + (ev.Facts.Distance == byte.MaxValue ? string.Empty : $"\n{ev.Facts.Distance} yalms away."));
             }
 
             ImGui.TableNextColumn();
@@ -265,7 +282,8 @@ public sealed partial class MainWindow
         DropStage.NoClip => "no clip",
         DropStage.SinkRefused => "not played",
         DropStage.TooFarOut => "cast too long",
-        DropStage.Audience => "not you",
+        DropStage.RateLimited => "too many at once",
+        DropStage.Audience => "not listening",
         DropStage.NotPc => "not a player",
         DropStage.NotAction => "not an action",
         _ => stage.ToString(),
