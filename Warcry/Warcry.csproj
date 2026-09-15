@@ -9,11 +9,7 @@
     <Name>Warcry</Name>
     <Punchline>Play your own voicelines when you use an action.</Punchline>
     <Description>Plays user-supplied audio clips in 3D space when you use actions. Clips are mapped per action and per character voice type from an in-game editor.</Description>
-    <!-- TODO before any release: set RepoUrl once the remote exists. It is optional for
-         a local build (DalamudPackager only requires Name, Author, Description, Punchline)
-         but it is the only "visit the repo" link users get, and it must be present in the
-         pluginmaster entry. Deliberately absent rather than guessed. -->
-    <!-- <RepoUrl>https://github.com/BSoD38/Warcry</RepoUrl> -->
+    <RepoUrl>https://github.com/BSoD38/Warcry</RepoUrl>
     <Tags>audio;voice;combat;roleplay</Tags>
     <!-- Inert for third-party repos: PluginInstallerWindow hard-disables the feedback
          button when SourceRepo.IsThirdParty, regardless of this value. Set false so the
@@ -32,5 +28,19 @@
     <PackageReference Include="NAudio" Version="2.3.0" />
     <PackageReference Include="NAudio.Vorbis" Version="1.5.0" />
   </ItemGroup>
+
+  <!-- Dalamud reads an installed plugin's icon from images\icon.png beside the DLL. This copy covers a dev-loaded
+       build, which runs straight out of the output folder. -->
+  <ItemGroup>
+    <Content Include="images\icon.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- DalamudPackager deliberately keeps images\ out of the zip, staging it beside the manifest for the repository
+       listing instead, so an installed plugin had no icon at all. Appended to the finished zip rather than by
+       overriding the packager's own target: that override has to restate every manifest property, and one the SDK
+       adds later would silently go missing - the same trap as a hand-written Warcry.json. -->
+  <Target Name="BundleIcon" AfterTargets="DefaultDalamudPackagerRelease" Condition="'$(Configuration)' == 'Release'">
+    <Exec Command="powershell -NoProfile -NonInteractive -Command &quot;Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = [IO.Compression.ZipFile]::Open('$(OutputPath)$(AssemblyName)\latest.zip', 'Update'); $old = $zip.GetEntry('images/icon.png'); if ($old) { $old.Delete() }; [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, '$(ProjectDir)images\icon.png', 'images/icon.png'); $zip.Dispose()&quot;" />
+  </Target>
 
 </Project>
