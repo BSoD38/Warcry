@@ -22,7 +22,7 @@ namespace Warcry.Audio;
 /// costs a failed encode on every cast. In NativeOnly, demotion means silence plus a
 /// banner, never a quiet swap to NAudio.</para>
 /// </remarks>
-public sealed class CompositeVoiceSink : IVoiceSink
+public sealed class CompositeVoiceSink : IDisposable
 {
     /// <summary>Errors tolerated before the native path is abandoned for the session.</summary>
     private const int StrikeLimit = 3;
@@ -69,14 +69,6 @@ public sealed class CompositeVoiceSink : IVoiceSink
 
     /// <summary>Why the native sink last declined, for the Status tab.</summary>
     public string NativeRefusal => this.native.LastRefusal;
-
-    public string Name => this.config.Sink switch
-    {
-        SinkMode.NativeOnly => "Native only",
-        SinkMode.ManagedOnly => "Managed",
-        SinkMode.Off => "Off",
-        _ => this.NativeActive ? "Native + managed" : "Managed (auto)",
-    };
 
     public string Status
     {

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
-using System.Text;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Sound;
 using FFXIVClientStructs.SQEX.CDev.Engine.Sd.Driver;
@@ -49,7 +48,7 @@ namespace Warcry.Audio;
 /// FFXIVClientStructs bump. Follow mode is newer and its own in-game criteria are listed
 /// in docs/PLAN.md §9.</para>
 /// </remarks>
-public sealed unsafe class NativeVoiceSink : IVoiceSink
+public sealed unsafe class NativeVoiceSink : IDisposable
 {
     /// <summary>
     /// Assumed tail beyond a clip's own length before an engine-owned voice slot is
@@ -132,16 +131,6 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
         /// <summary>Whether <c>IsPlaying()</c> has ever been observed true.</summary>
         public bool Started;
 
-        /// <summary>Position updates pushed to this voice, for the retirement log line.</summary>
-        public int Moves;
-
-        /// <summary>First and latest position written, so the trace can show whether the
-        /// caster actually moved while the line was sounding.</summary>
-        public Vector3 FirstPos;
-
-        /// <inheritdoc cref="FirstPos"/>
-        public Vector3 LastPos;
-
         /// <summary>When the engine took this voice, for the driver-push kill check.</summary>
         public long PlayedAt;
 
@@ -155,25 +144,11 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
     private readonly CasterLocator locator;
     private readonly List<LiveVoice> live = [];
 
-    private bool warnedAboutIdentity;
-    private bool warnedAboutCaster;
-
     /// <summary>
     /// Latched once the driver-level position push is known not to be available, so a
     /// per-frame loop does not retry a call it has already been told it cannot make.
     /// </summary>
     private bool driverUnusable;
-
-    /// <summary>
-    /// Voicelines traced this session. These go out at Information because Dalamud's file
-    /// sink drops Debug and below — the choice is a visible line or no line at all — so the
-    /// count is small: enough of a breadcrumb to confirm following still engages after a
-    /// game patch, not enough to drown the log.
-    /// </summary>
-    private int traced;
-
-    /// <inheritdoc cref="traced"/>
-    private const int TraceLimit = 3;
 
     public NativeVoiceSink(IPluginLog log, Configuration config, ScdForge forge, CasterLocator locator)
     {
@@ -182,8 +157,6 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
         this.forge = forge;
         this.locator = locator;
     }
-
-    public string Name => "Native";
 
     public string Status => this.Available
         ? $"Native (game engine). {this.forge.Status}"
@@ -263,14 +236,6 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
     /// heard. Moves climbing while this stays at zero means the driver is out of reach.
     /// </remarks>
     public long DriverMoves { get; private set; }
-
-    /// <summary>Retained voices ever observed playing by <c>IsPlaying()</c>.</summary>
-    /// <remarks>
-    /// Well below the number of lines played means <c>IsPlaying()</c> is not a usable signal
-    /// on this build, which is survivable — the expiry backstop still releases, and
-    /// positioning no longer depends on it — but it is worth knowing rather than inferring.
-    /// </remarks>
-    public long StartsSeen { get; private set; }
 
     /// <summary>
     /// Why the last request was not played natively, or empty if it was.
@@ -472,7 +437,6 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
             if (playing && !voice.Started)
             {
                 voice.Started = true;
-                this.StartsSeen++;
             }
 
             if (voice.ExpiresAt <= now)
@@ -512,25 +476,6 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
                 sound->SetPosition(true, position.X, position.Y, position.Z);
                 voice.DriverPushed |= this.PushToDriver(sound, position);
                 this.Moves++;
-
-                if (voice.Moves == 0)
-                {
-                    voice.FirstPos = position;
-                    this.TraceFirstMove(sound, in voice, position);
-                }
-
-                voice.LastPos = position;
-                voice.Moves++;
-            }
-            else if (!this.warnedAboutCaster)
-            {
-                // Says the quiet part out loud: an unresolvable caster means nothing can
-                // follow, and no amount of staring at the engine will explain it.
-                this.warnedAboutCaster = true;
-                this.log.Information(
-                    "NativeVoiceSink: caster {Entity:X8} did not resolve, so {Path} cannot follow.",
-                    voice.CasterEntityId,
-                    voice.GamePath);
             }
 
             // No caster: leave the voice where it is. A line whose caster despawned
@@ -645,33 +590,7 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
         try
         {
             var reported = sound->GetFileName();
-            if (!reported.HasValue)
-            {
-                if (!this.warnedAboutIdentity)
-                {
-                    this.warnedAboutIdentity = true;
-                    this.log.Information(
-                        "NativeVoiceSink: the engine holds no file name for {Path}, so a retained " +
-                        "slot cannot be identified. Follow mode rests on autoRelease alone.",
-                        gamePath);
-                }
-
-                return null;
-            }
-
-            var name = reported.AsSpan().ToArray();
-
-            if (!this.warnedAboutIdentity)
-            {
-                this.warnedAboutIdentity = true;
-                this.log.Information(
-                    "NativeVoiceSink: identifying retained slots by the name the engine holds — " +
-                    "'{Reported}' for {Path}.",
-                    Encoding.UTF8.GetString(name),
-                    gamePath);
-            }
-
-            return name;
+            return reported.HasValue ? reported.AsSpan().ToArray() : null;
         }
         catch (Exception ex)
         {
@@ -770,55 +689,11 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
         target.W = 1f;
 
         controller->SetPosition(&target);
-
-        if (this.DriverMoves++ == 0)
-        {
-            this.log.Information(
-                "NativeVoiceSink[follow] driver accepted its first position push via " +
-                "SoundController::SetPosition at {Address:X}.",
-                SoundController.Addresses.SetPosition.Value);
-        }
-
+        this.DriverMoves++;
         return true;
     }
 
-    /// <summary>
-    /// The first position pushed to a voice, and what the slot reads back immediately
-    /// afterwards.
-    /// </summary>
-    /// <remarks>
-    /// "The write never landed in the slot" and "it landed and the mixer ignored it" sound
-    /// identical from the speakers and have completely different answers, so read it
-    /// straight back. The controller address comes along because if the write lands and
-    /// nothing moves, <c>SoundDataSoundController</c> is the next thing to try.
-    /// </remarks>
-    private void TraceFirstMove(SoundData* sound, in LiveVoice voice, Vector3 wrote)
-    {
-        if (this.traced >= TraceLimit)
-        {
-            return;
-        }
-
-        this.log.Information(
-            "NativeVoiceSink[follow] {Path} first move: wrote ({X:0.00}, {Y:0.00}, {Z:0.00}), " +
-            "reads back ({RX:0.00}, {RY:0.00}, {RZ:0.00}), positional={Positional}, controller={Controller:X}",
-            voice.GamePath,
-            wrote.X, wrote.Y, wrote.Z,
-            sound->GetPositionX(), sound->GetPositionY(), sound->GetPositionZ(),
-            sound->GetIsPositional(),
-            (nint)sound->GetSoundController());
-    }
-
-    /// <summary>Releases a voice and records how it actually went.</summary>
-    /// <remarks>
-    /// <para>At Information, and bounded to <see cref="TraceLimit"/> lines a session,
-    /// because Dalamud's file sink drops everything below Information — a Debug line here
-    /// is a line nobody will ever read.</para>
-    /// <para>The number that matters is how far the caster moved while the line sounded. A
-    /// voice with plenty of updates over a distance of nothing is not a following bug at
-    /// all; a voice with updates over ten yalms that still did not move is the engine
-    /// declining to honour them.</para>
-    /// </remarks>
+    /// <summary>Releases a voice, first checking the driver push did not stop it.</summary>
     private void Retire(SoundManager* manager, SoundData* sound, in LiveVoice voice, bool stopFirst)
     {
         // A voice that stops moments after we touched the driver was stopped BY touching
@@ -840,26 +715,6 @@ public sealed unsafe class NativeVoiceSink : IVoiceSink
                     voice.GamePath,
                     lived);
             }
-        }
-
-        if (this.traced < TraceLimit)
-        {
-            this.traced++;
-            this.log.Information(
-                "NativeVoiceSink[follow] {Path} done: started={Started}, {Moves} update(s), " +
-                "caster moved {Moved:0.00}y ({FX:0.00}, {FY:0.00}, {FZ:0.00}) -> ({LX:0.00}, {LY:0.00}, {LZ:0.00}), " +
-                "slot reads ({RX:0.00}, {RY:0.00}, {RZ:0.00}) positional={Positional} wasPlaying={WasPlaying}, " +
-                "driver pushes this session={DriverMoves}",
-                voice.GamePath,
-                voice.Started,
-                voice.Moves,
-                Vector3.Distance(voice.FirstPos, voice.LastPos),
-                voice.FirstPos.X, voice.FirstPos.Y, voice.FirstPos.Z,
-                voice.LastPos.X, voice.LastPos.Y, voice.LastPos.Z,
-                sound->GetPositionX(), sound->GetPositionY(), sound->GetPositionZ(),
-                sound->GetIsPositional(),
-                stopFirst,
-                this.DriverMoves);
         }
 
         this.Release(manager, sound, stopFirst, voice.GamePath);

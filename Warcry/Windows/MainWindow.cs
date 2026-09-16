@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Interface.ImGuiFileDialog;
 using Dalamud.Interface.Windowing;
+using Warcry.Game;
 using GameAction = Lumina.Excel.Sheets.Action;
 
 namespace Warcry.Windows;
@@ -115,6 +117,131 @@ public sealed partial class MainWindow : Window, IDisposable
         ImGui.EndTabItem();
     }
 
+    // ---------------------------------------------------------------- widgets
+
+    /// <summary>A hover tooltip on the item just submitted.</summary>
+    /// <param name="flags">
+    /// <c>AllowWhenDisabled</c> for a control that is greyed out, where the tooltip is
+    /// usually the only place the reason lives.
+    /// </param>
+    /// <remarks>
+    /// The argument is built whether or not the item is hovered, so this is for literal
+    /// text and for controls drawn once a frame. Inside a row loop — or where the text
+    /// costs a sheet lookup — keep the explicit <c>if (ImGui.IsItemHovered())</c>.
+    /// </remarks>
+    private static void Tip(string text, ImGuiHoveredFlags flags = ImGuiHoveredFlags.None)
+    {
+        if (ImGui.IsItemHovered(flags))
+        {
+            ImGui.SetTooltip(text);
+        }
+    }
+
+    /// <summary>
+    /// A slider that reports its edit as finished only on release.
+    /// </summary>
+    /// <remarks>
+    /// The value is written back every frame so the sound changes as you drag, but
+    /// <paramref name="dirty"/> is set only on release: <c>SavePluginConfig</c> is
+    /// synchronous and writes through IReliableFileStorage, so saving mid-drag would
+    /// rewrite the whole config on every frame of it.
+    /// </remarks>
+    private static float Slider(
+        string label, float value, float min, float max, string format, ref bool dirty, string? tooltip = null)
+    {
+        ImGui.SetNextItemWidth(220f);
+        ImGui.SliderFloat(label, ref value, min, max, format);
+
+        if (ImGui.IsItemDeactivatedAfterEdit())
+        {
+            dirty = true;
+        }
+
+        if (tooltip is not null)
+        {
+            Tip(tooltip);
+        }
+
+        return value;
+    }
+
+    /// <inheritdoc cref="Slider"/>
+    private static int SliderInt(
+        string label, int value, int min, int max, string format, ref bool dirty, string? tooltip = null)
+    {
+        ImGui.SetNextItemWidth(220f);
+        ImGui.SliderInt(label, ref value, min, max, format);
+
+        if (ImGui.IsItemDeactivatedAfterEdit())
+        {
+            dirty = true;
+        }
+
+        if (tooltip is not null)
+        {
+            Tip(tooltip);
+        }
+
+        return value;
+    }
+
+    /// <summary>
+    /// The two ways to name a player that both the People tab and a mapping set's target
+    /// need: type it, or take your current target. Returns the player to add, or null.
+    /// </summary>
+    /// <remarks>
+    /// Typing matches on any world — a name is all we are given. The target button is the
+    /// only route that captures the home world, so it is the one that leaves a same-name
+    /// player on another world unaffected. Callers wrap this in their own ImGui ID scope.
+    /// </remarks>
+    private static NamedPlayer? DrawPlayerEntry(string addLabel, ref string buffer)
+    {
+        ImGui.SetNextItemWidth(200f);
+        var submitted = ImGui.InputTextWithHint(
+            "##name", "Character name", ref buffer, PlayerId.MaxNameBytes,
+            ImGuiInputTextFlags.EnterReturnsTrue);
+
+        ImGui.SameLine();
+        if ((ImGui.Button(addLabel) || submitted) && buffer.Trim().Length > 0)
+        {
+            var typed = new NamedPlayer { Name = buffer.Trim() };
+            buffer = string.Empty;
+            return typed;
+        }
+
+        // Disabled rather than hidden, so the route is discoverable before you have
+        // targeted anybody.
+        var target = Plugin.Targets.Target as IPlayerCharacter;
+        ImGui.SameLine();
+
+        if (target is null)
+        {
+            ImGui.BeginDisabled();
+        }
+
+        var take = ImGui.Button(target is null ? "Add my target" : $"Add {target.Name.TextValue}");
+
+        if (target is null)
+        {
+            ImGui.EndDisabled();
+        }
+
+        Tip(
+            target is null
+                ? "Target a player in game and this fills itself in, home world included."
+                : "Adds them exactly, home world included, so a same-name player on another\nworld is not affected.",
+            ImGuiHoveredFlags.AllowWhenDisabled);
+
+        return take && target is not null
+            ? new NamedPlayer
+            {
+                Name = target.Name.TextValue,
+                World = target.HomeWorld.RowId,
+                WorldName = target.HomeWorld.ValueNullable?.Name.ExtractText() ?? string.Empty,
+            }
+            : null;
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private string ActionName(uint id)
@@ -146,6 +273,14 @@ public sealed partial class MainWindow : Window, IDisposable
     /// precedes the client-side cast bar completing by roughly the slidecast window.
     /// Instants have no such gap and must never be delayed.
     /// </summary>
+    /// <remarks>
+    /// Its own memo, NOT <c>ClipResolver.GetActionKey</c>, however duplicated that looks.
+    /// The resolver's cache is Lane A: the ActionEffect detour writes it on the game main
+    /// thread (docs/PLAN.md 4). Reading it from Draw means two threads mutating one
+    /// <c>Dictionary</c>, which corrupts its buckets and takes the client down with no
+    /// managed exception — the Events tab calls this once per visible row per frame, so it
+    /// is the worst possible place to cross that line.
+    /// </remarks>
     private float CastSecondsOf(uint actionId)
     {
         if (this.castTimes.TryGetValue(actionId, out var cached))

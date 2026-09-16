@@ -53,8 +53,6 @@ public sealed partial class MainWindow
             this.DrawClipPreparation();
             ImGui.Spacing();
             this.DrawLocalPlayer();
-            ImGui.Spacing();
-            DrawGameSoundConfig();
         }
 
         ImGui.Spacing();
@@ -63,10 +61,7 @@ public sealed partial class MainWindow
             ImGui.SetClipboardText(this.BuildReport());
         }
 
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip("Copies everything under Details as text, for pasting into a bug report.");
-        }
+        Tip("Copies everything under Details as text, for pasting into a bug report.");
     }
 
     /// <summary>The whole tab in one line, for someone who wants only that.</summary>
@@ -105,7 +100,7 @@ public sealed partial class MainWindow
                                $"{composite.ManagedPlays} through the backup player");
         }
 
-        ImGui.TextUnformatted($"  Playing now   {this.plugin.Sink.ActiveVoices} of {cfg.MaxConcurrent} allowed");
+        ImGui.TextUnformatted($"  Playing now   {this.plugin.Composite.ActiveVoices} of {cfg.MaxConcurrent} allowed");
 
         // The whole point of reading the game's config: this number should track the
         // in-game sliders live. If it stays 1.00 while Master moves, it isn't wired.
@@ -126,12 +121,9 @@ public sealed partial class MainWindow
             this.plugin.PlayTestTone();
         }
 
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Plays the built-in tone through the current output, at the current volume.\n" +
-                "Hearing this but not your voicelines points at mappings, not at audio.");
-        }
+        Tip(
+            "Plays the built-in tone through the current output, at the current volume.\n" +
+            "Hearing this but not your voicelines points at mappings, not at audio.");
     }
 
     /// <summary>
@@ -335,7 +327,7 @@ public sealed partial class MainWindow
         var cfg = this.plugin.Config;
 
         ImGui.TextUnformatted("Audio path");
-        ImGui.TextUnformatted($"  Sink          {this.plugin.Sink.Status}");
+        ImGui.TextUnformatted($"  Sink          {this.plugin.Composite.Status}");
         ImGui.TextUnformatted($"  Routed        {composite.NativePlays} engine / {composite.ManagedPlays} built-in");
 
         if (composite.NativeRefusal.Length > 0)
@@ -344,7 +336,7 @@ public sealed partial class MainWindow
         }
 
         ImGui.TextUnformatted(
-            $"  Voices        {this.plugin.Sink.ActiveVoices} / {cfg.MaxConcurrent}" +
+            $"  Voices        {this.plugin.Composite.ActiveVoices} / {cfg.MaxConcurrent}" +
             $"   ({native.Following} following)");
 
         // Follow mode holds a slot in the game's 256-entry sound pool — shared with the
@@ -355,8 +347,7 @@ public sealed partial class MainWindow
             && cfg.Sink is SinkMode.NativeOnly or SinkMode.Auto)
         {
             ImGui.TextUnformatted(
-                $"  Follow        {native.Moves} position update(s), {native.DriverMoves} reached the driver, " +
-                $"{native.StartsSeen} start(s) seen");
+                $"  Follow        {native.Moves} position update(s), {native.DriverMoves} reached the driver");
             ImGui.TextUnformatted(
                 $"  Pool          {native.Released} released, {native.Forced} forced, {native.Orphaned} orphaned");
 
@@ -460,23 +451,6 @@ public sealed partial class MainWindow
         }
     }
 
-    private static void DrawGameSoundConfig()
-    {
-        ImGui.TextUnformatted("Game sound config");
-
-        foreach (var key in new[] { "SoundMaster", "SoundSe", "SoundVoice", "SoundPlayer", "SoundParty", "SoundOther", "SoundMicpos" })
-        {
-            if (Plugin.GameConfig.System.TryGetUInt(key, out var value))
-            {
-                ImGui.TextUnformatted($"  {key,-12}  {value}");
-            }
-            else
-            {
-                ImGui.TextDisabled($"  {key,-12}  NOT FOUND");
-            }
-        }
-    }
-
     private string BuildReport()
     {
         var sb = new StringBuilder();
@@ -488,8 +462,8 @@ public sealed partial class MainWindow
         var nativeSink = this.plugin.Composite.Native;
         sb.AppendLine(
             $"sink={this.plugin.Config.Sink} voicePosition={this.plugin.Config.VoicePosition} " +
-            $"voices={this.plugin.Sink.ActiveVoices} following={nativeSink.Following} " +
-            $"moves={nativeSink.Moves} driverMoves={nativeSink.DriverMoves} startsSeen={nativeSink.StartsSeen} " +
+            $"voices={this.plugin.Composite.ActiveVoices} following={nativeSink.Following} " +
+            $"moves={nativeSink.Moves} driverMoves={nativeSink.DriverMoves} " +
             $"released={nativeSink.Released} forced={nativeSink.Forced} orphaned={nativeSink.Orphaned}");
 
         // "The game went quiet" and "a grunt slipped through" are both this line.
@@ -543,8 +517,7 @@ public sealed partial class MainWindow
                 $"actionId={ev.ActionId}(\"{this.ActionName(ev.ActionId)}\") " +
                 $"cat={this.CategoryOf(ev.ActionId)} cast={this.CastSecondsOf(ev.ActionId):0.0}s " +
                 $"wasCasting={ev.WasCasting} castLeft={ev.CastRemaining:0.000} " +
-                $"var={ev.AnimationVariation} " +
-                $"gseq={ev.GlobalSequence} sseq={ev.SourceSequence} targets={ev.NumTargets}");
+                $"result={row.Drop}");
             shown++;
         }
 

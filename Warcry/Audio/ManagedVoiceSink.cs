@@ -21,7 +21,7 @@ namespace Warcry.Audio;
 /// DirectSound. The native sink, if it ever lands, is unaffected by this — a genuine
 /// argument in its favour.</para>
 /// </remarks>
-public sealed class ManagedVoiceSink : IVoiceSink
+public sealed class ManagedVoiceSink : IDisposable
 {
     private readonly IPluginLog log;
     private readonly GameVolume volume;
@@ -76,8 +76,6 @@ public sealed class ManagedVoiceSink : IVoiceSink
             log.Error(ex, "ManagedVoiceSink: could not open an output device. Audio disabled.");
         }
     }
-
-    public string Name => "Managed";
 
     public string Status { get; private set; }
 
@@ -135,7 +133,9 @@ public sealed class ManagedVoiceSink : IVoiceSink
             var panStage = new PanningSampleProvider(volumeStage)
             {
                 PanStrategy = new SinPanStrategy(),
-                Pan = 0f, // Camera-relative azimuth arrives with remote players in v2.
+                // Always centred. This sink has no listener and no world transform, so
+                // there is no azimuth to pan by; positional audio is the native sink's job.
+                Pan = 0f,
             };
 
             this.mixer.AddMixerInput(panStage);

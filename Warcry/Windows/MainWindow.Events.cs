@@ -31,23 +31,17 @@ public sealed partial class MainWindow
 
         ImGui.SameLine();
         ImGui.Checkbox("Only me", ref this.onlyMe);
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Hide actions used by anyone else.\n\n" +
-                "Leave it off while setting up who you hear: other people's rows are where\n" +
-                "the People tab's decisions show up, and hovering a name says what they are\n" +
-                "to you.");
-        }
+        Tip(
+            "Hide actions used by anyone else.\n\n" +
+            "Leave it off while setting up who you hear: other people's rows are where\n" +
+            "the People tab's decisions show up, and hovering a name says what they are\n" +
+            "to you.");
 
         ImGui.SameLine();
         ImGui.Checkbox("Hide non-actions", ref this.hideDropped);
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Hide everything that was never a candidate anyway: items, mounts, status\n" +
-                "ticks, and anything cast by something that is not a player.");
-        }
+        Tip(
+            "Hide everything that was never a candidate anyway: items, mounts, status\n" +
+            "ticks, and anything cast by something that is not a player.");
 
         ImGui.Separator();
 
@@ -121,6 +115,8 @@ public sealed partial class MainWindow
             // What they are to you, and why that was or was not enough. Without this a
             // stranger's row and a party member's row are indistinguishable, and "not
             // listening" gives no clue which switch on the People tab would fix it.
+            // Guarded rather than Tip(): this is inside the row loop, and Tip's argument is
+            // built whether or not the row is hovered.
             if (row.Audience != AudienceBucket.None && ImGui.IsItemHovered())
             {
                 var tier = Audience.Label(row.Audience);
@@ -179,12 +175,9 @@ public sealed partial class MainWindow
             else if (cast > 0f)
             {
                 ImGui.TextUnformatted($"{cast:0.0}s  (no bar)");
-                if (ImGui.IsItemHovered())
-                {
-                    ImGui.SetTooltip(
-                        "Normally a cast, but no cast bar was running for it, so it played\n" +
-                        "immediately. Instant casts and ability procs look like this.");
-                }
+                Tip(
+                    "Normally a cast, but no cast bar was running for it, so it played\n" +
+                    "immediately. Instant casts and ability procs look like this.");
             }
             else
             {
@@ -196,13 +189,10 @@ public sealed partial class MainWindow
                 ? $"r{ev.Caster.Race} s{ev.Caster.Sex} v{ev.Caster.VoiceId} (#{ev.Caster.VoiceSlot})"
                 : "-");
 
-            if (ImGui.IsItemHovered())
-            {
-                ImGui.SetTooltip(
-                    "The character's race, sex and voice, which is what lets a mapping apply\n" +
-                    "to one voice type rather than to everybody. Your own values are listed\n" +
-                    "under Details on the Status tab.");
-            }
+            Tip(
+                "The character's race, sex and voice, which is what lets a mapping apply\n" +
+                "to one voice type rather than to everybody. Your own values are listed\n" +
+                "under Details on the Status tab.");
 
             ImGui.TableNextColumn();
             if (row.Drop == DropStage.None)
@@ -214,12 +204,9 @@ public sealed partial class MainWindow
                 ImGui.TextDisabled(DropShort(row.Drop));
             }
 
-            if (ImGui.IsItemHovered())
-            {
-                ImGui.SetTooltip(row.Drop == DropStage.None
-                    ? "Warcry accepted this one and handed it to the audio output."
-                    : DropReason(row.Drop));
-            }
+            Tip(row.Drop == DropStage.None
+                ? "Warcry accepted this one and handed it to the audio output."
+                : DropReason(row.Drop));
 
             // Mute, from the row where you just heard the thing you did not want.
             // This is the only way MutedActionIds can be populated at all: before it

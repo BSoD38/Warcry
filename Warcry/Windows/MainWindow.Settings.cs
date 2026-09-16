@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using Dalamud.Bindings.ImGui;
 using Warcry.Audio;
@@ -43,12 +44,9 @@ public sealed partial class MainWindow
             dirty = true;
         }
 
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "The master switch. Off means nothing at all: no watching your actions,\n" +
-                "no sound, no work done in the background.");
-        }
+        Tip(
+            "The master switch. Off means nothing at all: no watching your actions,\n" +
+            "no sound, no work done in the background.");
 
         cfg.PlayTestToneOnActions = Toggle("Play voicelines", cfg.PlayTestToneOnActions, ref dirty,
             "Off keeps watching your actions, so the Events tab keeps filling up, but plays\n" +
@@ -65,27 +63,9 @@ public sealed partial class MainWindow
 
         Section("Volume");
 
-        var gain = cfg.MasterGain;
-        ImGui.SetNextItemWidth(220);
-        if (ImGui.SliderFloat("Warcry volume", ref gain, 0f, 2f, "%.2f"))
-        {
-            cfg.MasterGain = gain;
-        }
-
-        // Save on release, not per frame. SavePluginConfig is synchronous and writes
-        // through IReliableFileStorage, so saving while a slider is dragged writes the
-        // whole config on every frame of the drag.
-        if (ImGui.IsItemDeactivatedAfterEdit())
-        {
-            dirty = true;
-        }
-
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "A trim on top of the game's own volume sliders, which always apply first.\n" +
-                "1.00 means 'exactly as loud as the game would play it'.");
-        }
+        cfg.MasterGain = Slider("Warcry volume", cfg.MasterGain, 0f, 2f, "%.2f", ref dirty,
+            "A trim on top of the game's own volume sliders, which always apply first.\n" +
+            "1.00 means 'exactly as loud as the game would play it'.");
 
         cfg.UseVoiceSliderNotSe = Toggle("Follow the game's Voice slider", cfg.UseVoiceSliderNotSe, ref dirty,
             "On: your voicelines get quieter when you lower the game's Voice volume.\n" +
@@ -107,49 +87,21 @@ public sealed partial class MainWindow
             "Drops every instant action, including most weaponskills and all oGCDs.\n" +
             "Very quiet, and mostly useful for casters.");
 
-        var cooldown = cfg.SelfCooldownSeconds;
-        ImGui.SetNextItemWidth(220);
-        if (ImGui.SliderFloat("Minimum gap between your lines", ref cooldown, 0f, 15f, cooldown <= 0f ? "off" : "%.1f s"))
-        {
-            cfg.SelfCooldownSeconds = cooldown;
-        }
+        cfg.SelfCooldownSeconds = Slider(
+            "Minimum gap between your lines", cfg.SelfCooldownSeconds, 0f, 15f,
+            cfg.SelfCooldownSeconds <= 0f ? "off" : "%.1f s", ref dirty,
+            "The single most important setting for whether this stays fun past the\n" +
+            "first hour.\n\n" +
+            "A rotation fires roughly every 2.5s, so 2s lets most casts through while\n" +
+            "still collapsing bursts of instants into one line.\n\n" +
+            "Other people have their own gaps, on the People tab.");
 
-        if (ImGui.IsItemDeactivatedAfterEdit())
-        {
-            dirty = true;
-        }
-
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "The single most important setting for whether this stays fun past the\n" +
-                "first hour.\n\n" +
-                "A rotation fires roughly every 2.5s, so 2s lets most casts through while\n" +
-                "still collapsing bursts of instants into one line.\n\n" +
-                "Other people have their own gaps, on the People tab.");
-        }
-
-        var concurrent = cfg.MaxConcurrent;
-        ImGui.SetNextItemWidth(220);
-        if (ImGui.SliderInt("Voicelines at once", ref concurrent, 1, 6))
-        {
-            cfg.MaxConcurrent = concurrent;
-        }
-
-        if (ImGui.IsItemDeactivatedAfterEdit())
-        {
-            dirty = true;
-        }
-
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "How many lines may overlap. Deliberately capped low: the game has a limited\n" +
-                "number of sound slots and they are shared with everything else the client\n" +
-                "is playing, so taking too many would start silencing the game itself.\n\n" +
-                "When you are listening to other people, one of these is always kept free\n" +
-                "for your own lines, so a crowd cannot drown you out.");
-        }
+        cfg.MaxConcurrent = SliderInt("Voicelines at once", cfg.MaxConcurrent, 1, 6, "%d", ref dirty,
+            "How many lines may overlap. Deliberately capped low: the game has a limited\n" +
+            "number of sound slots and they are shared with everything else the client\n" +
+            "is playing, so taking too many would start silencing the game itself.\n\n" +
+            "When you are listening to other people, one of these is always kept free\n" +
+            "for your own lines, so a crowd cannot drown you out.");
 
         Section("The game's own grunts");
 
@@ -207,13 +159,10 @@ public sealed partial class MainWindow
             dirty = true;
         }
 
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                muted
-                    ? "Start playing here again."
-                    : "Never play anything while you are in this zone. Good for hub cities.");
-        }
+        Tip(
+            muted
+            ? "Start playing here again."
+            : "Never play anything while you are in this zone. Good for hub cities.");
 
         if (cfg.BlockedTerritories.Count > 0)
         {
@@ -287,9 +236,9 @@ public sealed partial class MainWindow
                 dirty = true;
             }
 
-            if (tooltip is not null && ImGui.IsItemHovered())
+            if (tooltip is not null)
             {
-                ImGui.SetTooltip(tooltip);
+                Tip(tooltip);
             }
 
             return value;
@@ -331,51 +280,80 @@ public sealed partial class MainWindow
     /// The sound-output choice, with the honest caveats attached to it rather than buried
     /// in a document.
     /// </summary>
-    private void DrawSoundOutputSetting(Configuration cfg, ref bool dirty)
+    /// <summary>
+    /// One labelled combo over a mode table, with a blurb on hover and an optional reason
+    /// a mode is unpickable right now.
+    /// </summary>
+    /// <remarks>
+    /// Shared by all three mode settings on this tab. Each used to carry its own copy of
+    /// "scan for the current label, BeginCombo, Selectable per mode, tooltip, EndCombo",
+    /// which is the part none of them differ in — what differs is the table and the
+    /// consequence line each draws underneath.
+    /// </remarks>
+    private static void ModeCombo<T>(
+        string label,
+        (T Mode, string Label, string Blurb)[] modes,
+        ref T current,
+        ref bool dirty,
+        Func<T, string?>? unavailable = null)
+        where T : struct, Enum
     {
-        var penumbra = this.plugin.Penumbra.PenumbraAvailable;
-
         var currentLabel = "?";
-        foreach (var (mode, label, _) in SinkModes)
+        foreach (var (mode, text, _) in modes)
         {
-            if (mode == cfg.Sink)
+            if (mode.Equals(current))
             {
-                currentLabel = label;
+                currentLabel = text;
             }
         }
 
         ImGui.SetNextItemWidth(260f);
-        if (ImGui.BeginCombo("Sound output", currentLabel))
+        if (!ImGui.BeginCombo(label, currentLabel))
         {
-            foreach (var (mode, label, blurb) in SinkModes)
+            return;
+        }
+
+        foreach (var (mode, text, blurb) in modes)
+        {
+            var why = unavailable?.Invoke(mode);
+
+            if (why is not null)
             {
-                var needsPenumbra = mode is SinkMode.NativeOnly or SinkMode.Auto;
-                var disabled = needsPenumbra && !penumbra;
-
-                if (disabled)
-                {
-                    ImGui.BeginDisabled();
-                }
-
-                if (ImGui.Selectable(label, mode == cfg.Sink))
-                {
-                    cfg.Sink = mode;
-                    dirty = true;
-                }
-
-                if (disabled)
-                {
-                    ImGui.EndDisabled();
-                }
-
-                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                {
-                    ImGui.SetTooltip(disabled ? $"{blurb}\n\n(Needs Penumbra, which is not running.)" : blurb);
-                }
+                ImGui.BeginDisabled();
             }
 
-            ImGui.EndCombo();
+            if (ImGui.Selectable(text, mode.Equals(current)))
+            {
+                current = mode;
+                dirty = true;
+            }
+
+            if (why is not null)
+            {
+                ImGui.EndDisabled();
+            }
+
+            Tip(why is null ? blurb : $"{blurb}\n\n({why})", ImGuiHoveredFlags.AllowWhenDisabled);
         }
+
+        ImGui.EndCombo();
+    }
+
+    private void DrawSoundOutputSetting(Configuration cfg, ref bool dirty)
+    {
+        var penumbra = this.plugin.Penumbra.PenumbraAvailable;
+        var sink = cfg.Sink;
+
+        ModeCombo(
+            "Sound output",
+            SinkModes,
+            ref sink,
+            ref dirty,
+            m => m is SinkMode.NativeOnly or SinkMode.Auto && !penumbra
+                ? "Needs Penumbra, which is not running."
+                : null);
+
+        cfg.Sink = sink;
 
         // The consequence line: one sentence saying what the current choice means, in the
         // same words the Status tab will use when it happens.
@@ -455,59 +433,20 @@ public sealed partial class MainWindow
             return;
         }
 
-        var currentLabel = "?";
-        foreach (var (mode, label, _) in GruntModes)
-        {
-            if (mode == cfg.Grunts)
-            {
-                currentLabel = label;
-            }
-        }
-
-        ImGui.SetNextItemWidth(260f);
-        if (ImGui.BeginCombo("Grunt when you attack", currentLabel))
-        {
-            foreach (var (mode, label, blurb) in GruntModes)
-            {
-                if (ImGui.Selectable(label, mode == cfg.Grunts))
-                {
-                    cfg.Grunts = mode;
-                    dirty = true;
-                }
-
-                if (ImGui.IsItemHovered())
-                {
-                    ImGui.SetTooltip(blurb);
-                }
-            }
-
-            ImGui.EndCombo();
-        }
+        var grunts = cfg.Grunts;
+        ModeCombo("Grunt when you attack", GruntModes, ref grunts, ref dirty);
+        cfg.Grunts = grunts;
 
         // Only one mode has to attribute a grunt to a caster, so only one has a window.
         if (cfg.Grunts == GruntMode.WhenVoiced)
         {
-            var window = cfg.GruntWindowSeconds;
-            ImGui.SetNextItemWidth(260f);
-            if (ImGui.SliderFloat("Stay silent for", ref window, 0.1f, 5f, "%.1f s"))
-            {
-                cfg.GruntWindowSeconds = window;
-            }
-
-            if (ImGui.IsItemDeactivatedAfterEdit())
-            {
-                dirty = true;
-            }
-
-            if (ImGui.IsItemHovered())
-            {
-                ImGui.SetTooltip(
-                    "The grunt comes from the action's animation rather than from the action\n" +
-                    "itself, so it can arrive anything up to a second after Warcry hears the\n" +
-                    "cast. This is how long to keep waiting for it.\n\n" +
-                    "Too short and it slips through on slow animations. Too long and a fast\n" +
-                    "rotation loses the grunt of the action after the one Warcry voiced.");
-            }
+            cfg.GruntWindowSeconds = Slider(
+                "Stay silent for", cfg.GruntWindowSeconds, 0.1f, 5f, "%.1f s", ref dirty,
+                "The grunt comes from the action's animation rather than from the action\n" +
+                "itself, so it can arrive anything up to a second after Warcry hears the\n" +
+                "cast. This is how long to keep waiting for it.\n\n" +
+                "Too short and it slips through on slow animations. Too long and a fast\n" +
+                "rotation loses the grunt of the action after the one Warcry voiced.");
         }
 
         // Worth saying under either suppressing mode: "silence all of them" reads like it
@@ -523,34 +462,9 @@ public sealed partial class MainWindow
     /// </summary>
     private void DrawVoicePositionSetting(Configuration cfg, ref bool dirty)
     {
-        var currentLabel = "?";
-        foreach (var (mode, label, _) in VoicePositions)
-        {
-            if (mode == cfg.VoicePosition)
-            {
-                currentLabel = label;
-            }
-        }
-
-        ImGui.SetNextItemWidth(260f);
-        if (ImGui.BeginCombo("Line follows you", currentLabel))
-        {
-            foreach (var (mode, label, blurb) in VoicePositions)
-            {
-                if (ImGui.Selectable(label, mode == cfg.VoicePosition))
-                {
-                    cfg.VoicePosition = mode;
-                    dirty = true;
-                }
-
-                if (ImGui.IsItemHovered())
-                {
-                    ImGui.SetTooltip(blurb);
-                }
-            }
-
-            ImGui.EndCombo();
-        }
+        var position = cfg.VoicePosition;
+        ModeCombo("Line follows you", VoicePositions, ref position, ref dirty);
+        cfg.VoicePosition = position;
 
         // Said here rather than left for the user to discover: the built-in player has no
         // positional model at all, so it cannot honour any of these.

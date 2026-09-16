@@ -76,14 +76,4 @@ public sealed class VoiceSlotTable
         return 0;
     }
 
-    public IReadOnlyList<ushort> VoicesFor(byte race, byte sex)
-        => this.voicesByRaceSex.TryGetValue((race, sex), out var v) ? v : [];
-
-    public IEnumerable<(byte Race, byte Sex, ushort[] Voices)> All()
-    {
-        foreach (var (key, voices) in this.voicesByRaceSex)
-        {
-            yield return (key.Race, key.Sex, voices);
-        }
-    }
 }

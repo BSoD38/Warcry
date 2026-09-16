@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 
 namespace Warcry.Clips;
@@ -17,13 +16,9 @@ public sealed class ClipInfo
 
     public int DurationMs { get; set; }
 
-    public int SampleCount { get; set; }
-
     public int SourceSampleRate { get; set; }
 
     public int SourceChannels { get; set; }
-
-    public DateTime ImportedAt { get; set; }
 }
 
 /// <summary>On-disk shape of clipmeta.json.</summary>

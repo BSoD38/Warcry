@@ -153,7 +153,8 @@ public sealed class ProfileStore
     /// <summary>
     /// The profile new mappings land in when the user has not set any up. Matches
     /// everything, so the common case — one person, one character — needs no thought
-    /// about profiles at all. The match fields exist for alts and for v2.
+    /// about profiles at all. The match fields are for alts and for aiming a set at
+    /// someone else.
     /// </summary>
     public VoiceProfile GetOrCreateDefault()
     {
@@ -244,27 +245,5 @@ public sealed class ProfileStore
         }
 
         this.Save();
-    }
-
-    /// <summary>Drops any clip reference whose file no longer exists in the library.</summary>
-    public int PruneMissingClips(Func<string, bool> clipExists)
-    {
-        var removed = 0;
-        foreach (var profile in this.document.Profiles)
-        {
-            foreach (var rule in profile.Rules)
-            {
-                removed += rule.Clips.RemoveAll(c => !clipExists(c.Hash));
-            }
-
-            profile.Rules.RemoveAll(r => r.Clips.Count == 0);
-        }
-
-        if (removed > 0)
-        {
-            this.Save();
-        }
-
-        return removed;
     }
 }

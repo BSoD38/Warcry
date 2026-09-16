@@ -4,8 +4,8 @@ using NAudio.Wave;
 namespace Warcry.Audio;
 
 /// <summary>
-/// A synthesised burst used to prove the audio chain end to end without needing an
-/// asset. M4 swaps this for decoded PCM from the clip library; nothing else changes.
+/// The synthesised beep: <c>/warcry test</c>, the Status tab's "Play a test sound", and
+/// the fallback for an action with nothing mapped to it (<c>FallBackToTestTone</c>).
 /// </summary>
 /// <remarks>
 /// Deliberately enveloped: a raw sine gated on and off clicks audibly, and that same

@@ -71,14 +71,11 @@ public sealed partial class MainWindow
             packs.Apply();
         }
 
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Converts every mapped clip into a form the game's sound engine can play,\n" +
-                "then loads the ones your current job can trigger.\n\n" +
-                "This already runs by itself a couple of seconds after you change anything,\n" +
-                "so you only need this button if something looks stuck.");
-        }
+        Tip(
+            "Converts every mapped clip into a form the game's sound engine can play,\n" +
+            "then loads the ones your current job can trigger.\n\n" +
+            "This already runs by itself a couple of seconds after you change anything,\n" +
+            "so you only need this button if something looks stuck.");
     }
 
     /// <summary>

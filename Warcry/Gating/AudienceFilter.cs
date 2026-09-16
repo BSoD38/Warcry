@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Warcry.Game;
 
 namespace Warcry.Gating;
@@ -113,10 +114,10 @@ public sealed class AudienceFilter
     public void RemoveBlocked(NamedPlayer player) => this.Remove(this.config.BlockedPeople, player);
 
     /// <summary>Is this name on the named list, on any world?</summary>
-    public bool IsNamed(string name) => Holds(this.config.NamedPeople, name);
+    public bool IsNamed(string name) => Holds(this.namedAnyWorld, this.namedOnWorld, name);
 
     /// <summary>Is this name on the blocked list, on any world?</summary>
-    public bool IsBlocked(string name) => Holds(this.config.BlockedPeople, name);
+    public bool IsBlocked(string name) => Holds(this.blockedAnyWorld, this.blockedOnWorld, name);
 
     /// <summary>
     /// Classifies one cast. Never throws and never allocates.
@@ -269,23 +270,11 @@ public sealed class AudienceFilter
         }
     }
 
-    private static bool Holds(List<NamedPlayer> list, string name)
+    /// <summary>On the list under any world, from the hashes <see cref="Rebuild"/> precomputed.</summary>
+    private static bool Holds(HashSet<ulong> anyWorld, HashSet<(ulong Name, uint World)> onWorld, string name)
     {
         var hash = PlayerId.Of(name);
-        if (hash == 0)
-        {
-            return false;
-        }
-
-        foreach (var entry in list)
-        {
-            if (PlayerId.Of(entry.Name) == hash)
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return hash != 0 && (anyWorld.Contains(hash) || onWorld.Any(e => e.Name == hash));
     }
 
     private static bool Same(NamedPlayer a, NamedPlayer b)

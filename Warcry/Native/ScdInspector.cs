@@ -1,17 +1,17 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace Warcry.Native;
 
-/// <summary>One weighted-random choice inside a sound group.</summary>
-/// <param name="CueIndex">Index into the sound-entry table.</param>
+/// <summary>
+/// One weighted-random choice inside a sound group. The 8-byte on-disk record is four
+/// <c>u16</c> — cue index, audio index, cumulative weight, local index — of which only
+/// these two are read back.
+/// </summary>
 /// <param name="AudioIndex">Index into the audio-entry table — what actually gets played.</param>
 /// <param name="CumulativeWeight">Running total; the engine rolls against the group's final value.</param>
-/// <param name="LocalIndex">Position within the group, 0-based.</param>
-public readonly record struct ScdGroupRecord(
-    ushort CueIndex, ushort AudioIndex, ushort CumulativeWeight, ushort LocalIndex);
+public readonly record struct ScdGroupRecord(ushort AudioIndex, ushort CumulativeWeight);
 
 /// <summary>A sound group — what <c>PlaySound</c>'s <c>soundNumber</c> selects.</summary>
 public sealed class ScdGroup
@@ -21,9 +21,6 @@ public sealed class ScdGroup
     public required int Offset { get; init; }
 
     public required List<ScdGroupRecord> Records { get; init; }
-
-    /// <summary>Total weight, i.e. the last record's cumulative value.</summary>
-    public int TotalWeight => this.Records.Count == 0 ? 0 : this.Records[^1].CumulativeWeight;
 }
 
 /// <summary>
@@ -56,7 +53,7 @@ public static class ScdInspector
     /// unexpected — this is a diagnostic, and a file that does not fit the model is itself
     /// the finding.
     /// </summary>
-    public static List<ScdGroup> ParseGroups(ScdWriter.Template template, out string error)
+    private static List<ScdGroup> ParseGroups(ScdWriter.Template template, out string error)
     {
         var groups = new List<ScdGroup>();
         error = string.Empty;
@@ -119,10 +116,8 @@ public static class ScdInspector
             {
                 var at = recordsAt + (r * RecordSize);
                 var record = new ScdGroupRecord(
-                    BinaryPrimitives.ReadUInt16LittleEndian(span[at..]),
                     BinaryPrimitives.ReadUInt16LittleEndian(span[(at + 2)..]),
-                    BinaryPrimitives.ReadUInt16LittleEndian(span[(at + 4)..]),
-                    BinaryPrimitives.ReadUInt16LittleEndian(span[(at + 6)..]));
+                    BinaryPrimitives.ReadUInt16LittleEndian(span[(at + 4)..]));
 
                 if (record.AudioIndex >= template.AudioOffsets.Length)
                 {

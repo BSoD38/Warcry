@@ -62,9 +62,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public Throttle Throttle { get; }
 
-    public IVoiceSink Sink { get; }
-
-    /// <summary>The sink actually installed, typed so the UI can report native-vs-managed.</summary>
+    /// <summary>The sink everything routes through; it owns the native and managed leaves.</summary>
     public CompositeVoiceSink Composite { get; }
 
     /// <summary>Encodes clips into game-loadable <c>.scd</c> and owns their redirects.</summary>
@@ -151,9 +149,8 @@ public sealed class Plugin : IDalamudPlugin
         this.Packs = new PackBuilder(
             Log, this.Config, this.Profiles, this.Clips, this.Forge, this.Jobs, this.Composite.Native);
 
-        this.Sink = this.Composite;
         this.Scheduler = new PlaybackScheduler(
-            this.Sink,
+            this.Composite,
             () => this.Diag.Drop(DropStage.SinkRefused));
 
         // Installed disabled: PlaySound is far too hot to sit in while the feature is off.
@@ -182,7 +179,7 @@ public sealed class Plugin : IDalamudPlugin
             "Warcry {Version} loaded. Hook: {Installed}. Sink: {Sink}.",
             PluginInterface.Manifest.AssemblyVersion,
             this.Watcher.Installed,
-            this.Sink.Status);
+            this.Composite.Status);
     }
 
     /// <summary>
@@ -368,7 +365,7 @@ public sealed class Plugin : IDalamudPlugin
         // consults for anything registered this frame.
         this.Packs.Update(this.CachedJobId, this.Crowd.Jobs, this.Crowd.Revision);
 
-        this.Sink.Update();
+        this.Composite.Update();
 
         // Follows the config toggles, keeps armed positions current and retires expired
         // windows. The detour itself never reads the object table.
@@ -400,7 +397,7 @@ public sealed class Plugin : IDalamudPlugin
         // A voiceline arriving after a loading screen is worse than none at all — and a
         // voice still sounding through one is holding a slot in the game's shared pool.
         this.Scheduler.CancelAll();
-        this.Sink.StopAll();
+        this.Composite.StopAll();
         this.Throttle.Clear();
 
         // Entity ids are reassigned across a zone change, so a surviving window would
@@ -463,9 +460,9 @@ public sealed class Plugin : IDalamudPlugin
                    "after a game patch. Wait for a FFXIVClientStructs update.";
         }
 
-        if (!this.Sink.Available)
+        if (!this.Composite.Available)
         {
-            return $"No audio sink is available: {this.Sink.Status}";
+            return $"No audio sink is available: {this.Composite.Status}";
         }
 
         var gameGain = this.Volume.GainFor(0, this.Config.UseVoiceSliderNotSe);
@@ -513,49 +510,15 @@ public sealed class Plugin : IDalamudPlugin
             return "No enabled mapping has a clip attached. Use the Actions tab.";
         }
 
-        // Nothing is blocking as a matter of configuration, so point at the counters, which
-        // record what actually happened to recent events.
-        var noClip = this.Diag.DropCount(DropStage.NoClip);
-        var throttled = this.Diag.DropCount(DropStage.Throttle);
-        var sinkRefused = this.Diag.DropCount(DropStage.SinkRefused);
-        var notListening = this.Diag.DropCount(DropStage.Audience);
-        var rateLimited = this.Diag.DropCount(DropStage.RateLimited);
-
-        // Checked before the rest because it is the one that fires when your own actions
-        // are switched off but somebody else's are on: everything else here would then be
-        // reporting on events that were never yours to begin with.
+        // The one counter-derived answer kept here: it fires when your own actions are off
+        // but somebody else's are on, which reads as "nothing works" rather than as a
+        // setting. Every other drop counter is listed, in full and in plain language, by
+        // the Status tab's "Lines that did not play" — no need to rank them twice.
         if ((this.Config.Audience & Game.AudienceBucket.Self) == 0)
         {
-            return $"\"Me\" is off on the People tab, so your own actions never play. " +
-                   $"{notListening} action(s) have been skipped for not being from someone you listen to.";
-        }
-
-        if (rateLimited > 0 && rateLimited >= throttled && rateLimited >= noClip)
-        {
-            return $"Nothing is blocking playback, but {rateLimited} of other people's line(s) arrived " +
-                   "faster than the rate cap on the People tab allows and were dropped. Raise " +
-                   "\"lines in a row\", shorten the refill, or listen to fewer people.";
-        }
-
-        if (noClip > 0 && noClip >= throttled && noClip >= sinkRefused)
-        {
-            return $"Nothing is blocking playback, but {noClip} action(s) had no clip mapped to " +
-                   "them. The actions you are using are not the ones your mappings cover. The " +
-                   "Events tab shows which action id actually fired.";
-        }
-
-        if (throttled > 0 && throttled >= sinkRefused)
-        {
-            return $"Nothing is blocking playback, but {throttled} action(s) were skipped for " +
-                   "coming too soon after the previous line, or for being an auto-attack, an " +
-                   "instant while \"only actions with a cast bar\" is on, or a muted action.";
-        }
-
-        if (sinkRefused > 0)
-        {
-            var reason = this.Composite.LastRefusal;
-            return $"Nothing is blocking playback, but {sinkRefused} line(s) could not be played" +
-                   $"{(reason.Length > 0 ? $", the last one because {reason}" : ", usually because too many were already playing at once")}.";
+            return "\"Me\" is off on the People tab, so your own actions never play. " +
+                   $"{this.Diag.DropCount(DropStage.Audience)} action(s) have been skipped for " +
+                   "not being from someone you listen to.";
         }
 
         return string.Empty;
@@ -703,7 +666,7 @@ public sealed class Plugin : IDalamudPlugin
 
         this.Scheduler.CancelAll();
 
-        this.Sink.Dispose();
+        this.Composite.Dispose();
         this.Clips.Dispose();
         this.Penumbra.ClearAll();
 

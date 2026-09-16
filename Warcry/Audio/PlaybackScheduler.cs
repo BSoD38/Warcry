@@ -60,7 +60,7 @@ public sealed class PlaybackScheduler
     }
 
     private readonly List<Pending> pending = [];
-    private readonly IVoiceSink sink;
+    private readonly CompositeVoiceSink sink;
     private readonly Action? onRefused;
 
     /// <param name="onRefused">
@@ -69,7 +69,7 @@ public sealed class PlaybackScheduler
     /// ones happen frames later with nobody watching, and used to vanish — the Events row
     /// read "ok" for a line that never sounded.
     /// </param>
-    public PlaybackScheduler(IVoiceSink sink, Action? onRefused = null)
+    public PlaybackScheduler(CompositeVoiceSink sink, Action? onRefused = null)
     {
         this.sink = sink;
         this.onRefused = onRefused;

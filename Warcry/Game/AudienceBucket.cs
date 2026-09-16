@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 
 namespace Warcry.Game;
 
@@ -127,15 +128,8 @@ public static class Audience
             return "everyone";
         }
 
-        var text = string.Empty;
-        foreach (var bucket in ClassifyOrder)
-        {
-            if ((set & bucket) != 0)
-            {
-                text += text.Length == 0 ? Label(bucket) : ", " + Label(bucket).ToLowerInvariant();
-            }
-        }
-
-        return text;
+        // Only the leading label keeps its capital; the rest read as a continuing list.
+        var labels = ClassifyOrder.Where(b => (set & b) != 0).Select(Label);
+        return string.Join(", ", labels.Select((l, i) => i == 0 ? l : l.ToLowerInvariant()));
     }
 }

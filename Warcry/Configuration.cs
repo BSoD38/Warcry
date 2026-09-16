@@ -84,12 +84,6 @@ public sealed class Configuration : IPluginConfiguration
     public VoicePositionMode VoicePosition { get; set; } = VoicePositionMode.Follow;
 
     /// <summary>
-    /// v1 field, superseded by <see cref="Sink"/>. Kept only so old configs deserialise;
-    /// <see cref="Migrate"/> folds it in. Nothing else may read it.
-    /// </summary>
-    public bool PreferNativeSink { get; set; }
-
-    /// <summary>
     /// Play the synthesised tone when an action has no clip mapped. Useful while setting
     /// mappings up — audible proof the action was detected — and noise once you are done.
     /// </summary>
@@ -285,9 +279,10 @@ public sealed class Configuration : IPluginConfiguration
     /// any age arrives intact.
     /// </summary>
     /// <remarks>
-    /// There are no steps yet — v1 is the first shipped schema. The ladder exists so the
-    /// first field change has an obvious home rather than being bolted on under pressure.
-    /// Add steps as <c>if (this.Version &lt; N) { …; this.Version = N; }</c>, in order.
+    /// v5 is the first schema any user can hold: every earlier version existed only between
+    /// development commits, before 0.2.0.0 was released, so their steps were unreachable and
+    /// are gone. Add new steps as <c>if (this.Version &lt; N) { …; this.Version = N; }</c>,
+    /// in order.
     /// </remarks>
     private bool Migrate(IPluginLog log)
     {
@@ -312,25 +307,6 @@ public sealed class Configuration : IPluginConfiguration
         var from = this.Version;
 
         // -- add ordered migration steps here --
-
-        if (this.Version < 2)
-        {
-            // v1's bool became the SinkMode enum. Anyone who opted into the native sink
-            // gets the mode this rework was built for: the engine or an explained drop,
-            // never a quiet NAudio substitute. Auto remains available for anyone who
-            // preferred the old fallback behaviour.
-            this.Sink = this.PreferNativeSink ? SinkMode.NativeOnly : SinkMode.ManagedOnly;
-            this.Version = 2;
-        }
-
-        // v3 (2026-08-18): NativePitchViaSpeed removed — the engine's speed argument is
-        // confirmed working, so varispeed pitch always rides it. No data to transform;
-        // the stored bool is simply dropped on load.
-
-        // v4 (2026-08-24): FollowViaDriver removed. The driver-level position push was
-        // behind a flag only while it was unproven; it is what makes Follow follow, so it
-        // is now unconditional. Same shape as v3 — the stored bool is dropped on load, and
-        // anyone who had it off gets working following rather than a silently inert mode.
 
         if (this.Version < 5)
         {
@@ -389,61 +365,47 @@ public sealed class Configuration : IPluginConfiguration
             repairs++;
         }
 
-        if (this.MaxDistanceYalms is < 0 or > 255)
-        {
-            log.Warning("Warcry: MaxDistanceYalms was {Value}; clamped into 0-255.", this.MaxDistanceYalms);
-            this.MaxDistanceYalms = Math.Clamp(this.MaxDistanceYalms, 0, 255);
-            repairs++;
-        }
-
-        if (this.SoftCrowdLimit is < 1 or > 100)
-        {
-            log.Warning("Warcry: SoftCrowdLimit was {Value}; clamped into 1-100.", this.SoftCrowdLimit);
-            this.SoftCrowdLimit = Math.Clamp(this.SoftCrowdLimit, 1, 100);
-            repairs++;
-        }
-
-        if (this.RateBurst is < 1 or > 32)
-        {
-            log.Warning("Warcry: RateBurst was {Value}; clamped into 1-32.", this.RateBurst);
-            this.RateBurst = Math.Clamp(this.RateBurst, 1, 32);
-            repairs++;
-        }
-
-        if (!Enum.IsDefined(this.Sink))
-        {
-            log.Warning("Warcry: Sink was {Value}; reset to ManagedOnly.", this.Sink);
-            this.Sink = SinkMode.ManagedOnly;
-            repairs++;
-        }
-
-        if (!Enum.IsDefined(this.VoicePosition))
-        {
-            log.Warning("Warcry: VoicePosition was {Value}; reset to Follow.", this.VoicePosition);
-            this.VoicePosition = VoicePositionMode.Follow;
-            repairs++;
-        }
-
-        // Reset to Off rather than to a suppressing mode: an unreadable value must not be
-        // resolved into silencing the game's audio.
-        if (!Enum.IsDefined(this.Grunts))
-        {
-            log.Warning("Warcry: Grunts was {Value}; reset to Off.", this.Grunts);
-            this.Grunts = GruntMode.Off;
-            repairs++;
-        }
+        this.MaxDistanceYalms = ClampInt(this.MaxDistanceYalms, 0, 255, nameof(this.MaxDistanceYalms));
+        this.SoftCrowdLimit = ClampInt(this.SoftCrowdLimit, 1, 100, nameof(this.SoftCrowdLimit));
+        this.RateBurst = ClampInt(this.RateBurst, 1, 32, nameof(this.RateBurst));
 
         // Hard ceiling, not taste: the game's SoundData pool is shared with the whole
         // client and its Voice bus has five tracks.
-        if (this.MaxConcurrent is < 1 or > 8)
-        {
-            log.Warning(
-                "Warcry: MaxConcurrent was {Value}; clamped into 1-8.", this.MaxConcurrent);
-            this.MaxConcurrent = Math.Clamp(this.MaxConcurrent, 1, 8);
-            repairs++;
-        }
+        this.MaxConcurrent = ClampInt(this.MaxConcurrent, 1, 8, nameof(this.MaxConcurrent));
+
+        this.Sink = Defined(this.Sink, SinkMode.ManagedOnly, nameof(this.Sink));
+        this.VoicePosition = Defined(
+            this.VoicePosition, VoicePositionMode.Follow, nameof(this.VoicePosition));
+
+        // Off rather than a suppressing mode: an unreadable value must not be resolved
+        // into silencing the game's audio.
+        this.Grunts = Defined(this.Grunts, GruntMode.Off, nameof(this.Grunts));
 
         return repairs > 0;
+
+        int ClampInt(int value, int min, int max, string name)
+        {
+            if (value >= min && value <= max)
+            {
+                return value;
+            }
+
+            log.Warning("Warcry: {Field} was {Value}; clamped into {Min}-{Max}.", name, value, min, max);
+            repairs++;
+            return Math.Clamp(value, min, max);
+        }
+
+        T Defined<T>(T value, T fallback, string name) where T : struct, Enum
+        {
+            if (Enum.IsDefined(value))
+            {
+                return value;
+            }
+
+            log.Warning("Warcry: {Field} was {Value}; reset to {Fallback}.", name, value, fallback);
+            repairs++;
+            return fallback;
+        }
 
         T Fix<T>(string name) where T : new()
         {

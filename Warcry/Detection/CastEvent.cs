@@ -3,19 +3,6 @@ using Warcry.Game;
 
 namespace Warcry.Detection;
 
-/// <summary>Where in an action's life the event was captured.</summary>
-public enum TriggerPhase : byte
-{
-    /// <summary>ActionEffectHandler.Receive — effect application. The default.</summary>
-    Snapshot = 0,
-
-    /// <summary>ActionManager.UseActionLocation — local player keypress. Optional.</summary>
-    Input = 1,
-
-    /// <summary>PacketDispatcher.HandleActorCastPacket — cast bar start. v2, optional.</summary>
-    CastStart = 2,
-}
-
 /// <summary>
 /// One action use, captured on the game main thread. Deliberately a readonly struct
 /// passed by <c>in</c>: the detour must not allocate.
@@ -23,7 +10,6 @@ public enum TriggerPhase : byte
 public readonly struct CastEvent
 {
     public readonly uint CasterEntityId;
-    public readonly nint CasterAddress;
 
     /// <summary>
     /// Header @0x08. Settled in game as the mapping key: it consistently names the
@@ -31,11 +17,8 @@ public readonly struct CastEvent
     /// </summary>
     public readonly uint ActionId;
 
-    public readonly byte AnimationVariation;
+    /// <summary>Distinguishes one cast from the next. The Events tab keys its rows on it.</summary>
     public readonly uint GlobalSequence;
-    public readonly ushort SourceSequence;
-    public readonly byte RawActionType;
-    public readonly byte NumTargets;
 
     public readonly Vector3 Position;
 
@@ -43,7 +26,6 @@ public readonly struct CastEvent
     public readonly byte SoundCategory;
 
     public readonly CasterKey Caster;
-    public readonly TriggerPhase Phase;
 
     /// <summary>
     /// Who the caster is to you, captured in the detour so the audience filter never has
@@ -110,10 +92,9 @@ public readonly struct CastEvent
     }
 
     public CastEvent(
-        uint casterEntityId, nint casterAddress, uint actionId,
-        byte animationVariation, uint globalSequence, ushort sourceSequence,
-        byte rawActionType, byte numTargets, Vector3 position, byte soundCategory,
-        CasterKey caster, in CasterFacts facts, TriggerPhase phase,
+        uint casterEntityId, uint actionId, uint globalSequence,
+        Vector3 position, byte soundCategory,
+        CasterKey caster, in CasterFacts facts,
         bool wasCasting, float castCurrent, float castTotal)
     {
         this.Facts = facts;
@@ -121,16 +102,10 @@ public readonly struct CastEvent
         this.CastCurrent = castCurrent;
         this.CastTotal = castTotal;
         this.CasterEntityId = casterEntityId;
-        this.CasterAddress = casterAddress;
         this.ActionId = actionId;
-        this.AnimationVariation = animationVariation;
         this.GlobalSequence = globalSequence;
-        this.SourceSequence = sourceSequence;
-        this.RawActionType = rawActionType;
-        this.NumTargets = numTargets;
         this.Position = position;
         this.SoundCategory = soundCategory;
         this.Caster = caster;
-        this.Phase = phase;
     }
 }

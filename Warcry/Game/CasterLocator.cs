@@ -8,9 +8,6 @@ namespace Warcry.Game;
 /// <para>By id every time, never a cached object. A game-object reference held across
 /// frames outlives the actor it points at, and an actor can despawn mid-line.</para>
 /// <para>Framework thread only — it reads the object table.</para>
-/// <para>This is the positioning half of the caster seam. v1 only ever asks about the
-/// local player, which is what the fast path is for; the table scan exists for v2's remote
-/// casters rather than sitting on v1's per-frame path.</para>
 /// </remarks>
 public sealed class CasterLocator
 {
@@ -19,28 +16,14 @@ public sealed class CasterLocator
     public CasterLocator(IObjectTable objects) => this.objects = objects;
 
     /// <summary>The caster's live world position, or false if it is not in the table.</summary>
+    /// <remarks>
+    /// NOTE: SearchByEntityId, not SearchById. CastEvent carries the 32-bit ENTITY id;
+    /// SearchById takes the 64-bit object id and would silently find nothing.
+    /// </remarks>
     public bool TryGetPosition(uint entityId, out Vector3 position)
     {
-        if (entityId != 0)
-        {
-            var local = this.objects.LocalPlayer;
-            if (local is not null && local.EntityId == entityId)
-            {
-                position = local.Position;
-                return true;
-            }
-
-            // NOTE: SearchByEntityId, not SearchById. CastEvent carries the 32-bit ENTITY
-            // id; SearchById takes the 64-bit object id and would silently find nothing.
-            var actor = this.objects.SearchByEntityId(entityId);
-            if (actor is not null)
-            {
-                position = actor.Position;
-                return true;
-            }
-        }
-
-        position = default;
-        return false;
+        var actor = entityId == 0 ? null : this.objects.SearchByEntityId(entityId);
+        position = actor?.Position ?? default;
+        return actor is not null;
     }
 }

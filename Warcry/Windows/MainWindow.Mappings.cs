@@ -129,14 +129,11 @@ public sealed partial class MainWindow
                 this.RebuildActionMatches();
             }
 
-            if (ImGui.IsItemHovered())
-            {
-                ImGui.SetTooltip(
-                    "The Action sheet contains duplicates, old versions and NPC copies,\n" +
-                    "so several rows can share a name and only one ever fires.\n" +
-                    "This lists only ids actually observed from your character.\n\n" +
-                    "Press the skill once and it appears here.");
-            }
+            Tip(
+                "The Action sheet contains duplicates, old versions and NPC copies,\n" +
+                "so several rows can share a name and only one ever fires.\n" +
+                "This lists only ids actually observed from your character.\n\n" +
+                "Press the skill once and it appears here.");
 
             // Observed ids normally bypass the job filter (they are proven, whatever job
             // they belong to), so a job's list still shows everything you have ever used.
@@ -151,12 +148,9 @@ public sealed partial class MainWindow
                     this.RebuildActionMatches();
                 }
 
-                if (ImGui.IsItemHovered())
-                {
-                    ImGui.SetTooltip(
-                        "Actions you have used on other jobs normally stay in this list.\n" +
-                        $"Tick to show only what belongs to {this.JobLabel(this.jobFilter)}'s kit.");
-                }
+                Tip(
+                    "Actions you have used on other jobs normally stay in this list.\n" +
+                    $"Tick to show only what belongs to {this.JobLabel(this.jobFilter)}'s kit.");
             }
 
             // Conditional actions (Enchanted Riposte and friends) are not flagged
@@ -198,6 +192,8 @@ public sealed partial class MainWindow
                     this.selectedActionId = id;
                 }
 
+                // Guarded, not Tip(): ActionDebugInfo reads the sheet, and this runs for
+                // every row in the list.
                 if (ImGui.IsItemHovered())
                 {
                     var prefix = seen ? "You have used this one, so it is the id that actually fires.\n\n" : string.Empty;
@@ -266,10 +262,7 @@ public sealed partial class MainWindow
             }
         }
 
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip("Fills in whatever you last pressed, which is faster than searching.");
-        }
+        Tip("Fills in whatever you last pressed, which is faster than searching.");
 
         ImGui.Separator();
 
@@ -314,10 +307,7 @@ public sealed partial class MainWindow
                 this.ApplyToShownRules(store, r => r.PitchSemitones = this.bulkPitch);
             }
 
-            if (ImGui.IsItemHovered())
-            {
-                ImGui.SetTooltip("Overwrites the pitch of every mapping listed below.\nPer-mapping values are replaced and there is no undo.");
-            }
+            Tip("Overwrites the pitch of every mapping listed below.\nPer-mapping values are replaced and there is no undo.");
 
             ImGui.SetNextItemWidth(190);
             ImGui.SliderFloat("##bulkrandom", ref this.bulkRandom, 0f, 12f, $"set random +/- {this.bulkRandom:0.0} st");
@@ -327,10 +317,7 @@ public sealed partial class MainWindow
                 this.ApplyToShownRules(store, r => r.PitchRandomSemitones = this.bulkRandom);
             }
 
-            if (ImGui.IsItemHovered())
-            {
-                ImGui.SetTooltip("Overwrites the random spread of every mapping listed below.\nA small amount on everything is usually better than none.");
-            }
+            Tip("Overwrites the random spread of every mapping listed below.\nA small amount on everything is usually better than none.");
         }
 
         if (!ImGui.BeginChild("##mappinglist", ImGui.GetContentRegionAvail(), true))
@@ -421,10 +408,7 @@ public sealed partial class MainWindow
                         }
                     }
 
-                    if (ImGui.IsItemHovered())
-                    {
-                        ImGui.SetTooltip("Click to audition at this pitch. Right-click to unassign.");
-                    }
+                    Tip("Click to audition at this pitch. Right-click to unassign.");
 
                     if (ImGui.IsItemClicked(ImGuiMouseButton.Right))
                     {
@@ -477,14 +461,11 @@ public sealed partial class MainWindow
                     store.Save();
                 }
 
-                if (ImGui.IsItemHovered())
-                {
-                    ImGui.SetTooltip(
-                        "Varispeed: pitch and length move together, like tape speed.\n" +
-                        "Cheap, clean, and usually more natural for a voice.\n\n" +
-                        "Keep duration: phase vocoder. Costs CPU and adds some\n" +
-                        "phasiness and transient smearing that filtering cannot remove.");
-                }
+                Tip(
+                    "Varispeed: pitch and length move together, like tape speed.\n" +
+                    "Cheap, clean, and usually more natural for a voice.\n\n" +
+                    "Keep duration: phase vocoder. Costs CPU and adds some\n" +
+                    "phasiness and transient smearing that filtering cannot remove.");
 
                 if (rule.PitchMode == PitchMode.PreserveDuration)
                 {
@@ -503,12 +484,9 @@ public sealed partial class MainWindow
                         store.Save();
                     }
 
-                    if (ImGui.IsItemHovered())
-                    {
-                        ImGui.SetTooltip(
-                            "Larger windows smooth sustained vowels but smear the attack.\n" +
-                            "For a short shout, Crisp usually beats Smooth.");
-                    }
+                    Tip(
+                        "Larger windows smooth sustained vowels but smear the attack.\n" +
+                        "For a short shout, Crisp usually beats Smooth.");
                 }
 
                 ImGui.SameLine();

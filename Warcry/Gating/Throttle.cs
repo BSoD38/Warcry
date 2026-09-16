@@ -118,9 +118,14 @@ public sealed class Throttle
     /// <summary>Starts the cooldown and spends a token. Call only once a clip is scheduled.</summary>
     public void Mark(uint casterEntityId, AudienceBucket primary)
     {
-        if (this.lastPlayTicks.Count > MaxTrackedCasters)
+        // Dropping the whole table at the ceiling, exactly as ClipResolver.Remember bounds
+        // its own per-player map: an eviction order maintained on the cast path costs more
+        // than the worst case here, which is one early line per caster, once. Overwriting
+        // an existing caster is always free, so this only trips on a genuinely new one.
+        if (this.lastPlayTicks.Count >= MaxTrackedCasters &&
+            !this.lastPlayTicks.ContainsKey(casterEntityId))
         {
-            this.Reap();
+            this.lastPlayTicks.Clear();
         }
 
         this.lastPlayTicks[casterEntityId] = Stopwatch.GetTimestamp();
@@ -151,50 +156,6 @@ public sealed class Throttle
         var refill = Math.Max(0.1f, this.config.RateRefillSeconds);
         this.tokens = Math.Min(this.config.RateBurst, this.tokens + (elapsed / refill));
         return this.tokens;
-    }
-
-    /// <summary>Drop entries older than a minute so the dictionary cannot grow unbounded.</summary>
-    /// <remarks>
-    /// The age sweep alone is not a bound. With more than <see cref="MaxTrackedCasters"/>
-    /// casters all active inside the window it frees nothing, and then runs in full on every
-    /// single <see cref="Mark"/> — an allocating scan per cast, growing as the crowd grows.
-    /// So when the sweep comes up empty, evict the oldest entry outright: it is the one whose
-    /// cooldown has least left to run, and dropping it costs at most one repeated line.
-    /// </remarks>
-    private void Reap()
-    {
-        var cutoff = Stopwatch.GetTimestamp() - (Stopwatch.Frequency * 60);
-        var stale = new List<uint>();
-        var oldestId = 0u;
-        var oldestTicks = long.MaxValue;
-
-        foreach (var (id, ticks) in this.lastPlayTicks)
-        {
-            if (ticks < cutoff)
-            {
-                stale.Add(id);
-            }
-            else if (ticks < oldestTicks)
-            {
-                oldestTicks = ticks;
-                oldestId = id;
-            }
-        }
-
-        if (stale.Count == 0)
-        {
-            if (oldestTicks != long.MaxValue)
-            {
-                this.lastPlayTicks.Remove(oldestId);
-            }
-
-            return;
-        }
-
-        foreach (var id in stale)
-        {
-            this.lastPlayTicks.Remove(id);
-        }
     }
 
     public void Clear()

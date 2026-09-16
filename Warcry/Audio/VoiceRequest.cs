@@ -89,39 +89,10 @@ public readonly struct VoiceRequest
     }
 }
 
-/// <summary>
-/// The seam that lets the native-audio question stay unanswered without blocking the plugin.
-/// </summary>
-/// <remarks>
-/// Implementations: <see cref="NativeVoiceSink"/> (SoundManager.PlaySound on a forged,
-/// Penumbra-redirected .scd), <see cref="ManagedVoiceSink"/> (NAudio — audition, and the
-/// gameplay path only when the sink mode says so), and <see cref="CompositeVoiceSink"/>,
-/// which routes between them per <see cref="SinkMode"/>. See docs/PLAN.md 5.6.
-/// </remarks>
-public interface IVoiceSink : IDisposable
-{
-    /// <summary>Short name for the Status tab, e.g. "Managed (NAudio / WaveOut)".</summary>
-    string Name { get; }
-
-    /// <summary>Plain-English reason this sink is the active one. Shown to the user.</summary>
-    string Status { get; }
-
-    bool Available { get; }
-
-    /// <summary>Number of voices currently sounding.</summary>
-    int ActiveVoices { get; }
-
-    /// <summary>Called on the game main thread. Returns false if the request was refused.</summary>
-    bool TryPlay(in VoiceRequest request);
-
-    /// <summary>Called every frame on the game main thread.</summary>
-    void Update();
-
-    /// <summary>Stop everything sounding right now. Game main thread.</summary>
-    /// <remarks>
-    /// Called on a zone change and during teardown. Not politeness: for the native sink
-    /// this is also how a retained slot in the game's 256-entry sound pool gets handed
-    /// back, and a slot leaked past unload is gone until the client restarts.
-    /// </remarks>
-    void StopAll();
-}
+// NOTE: the sinks deliberately share no interface. NativeVoiceSink and ManagedVoiceSink
+// are only ever reached through CompositeVoiceSink, which holds them concretely and is
+// itself the only sink anything else talks to — so an abstraction here would have had one
+// consumer and three declarations. Each still exposes Status/Available/ActiveVoices/
+// TryPlay/Update/StopAll, and StopAll is load-bearing rather than politeness: for the
+// native sink it is how a retained slot in the game's 256-entry sound pool gets handed
+// back, and a slot leaked past unload is gone until the client restarts.

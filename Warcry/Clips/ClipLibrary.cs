@@ -237,10 +237,8 @@ public sealed class ClipLibrary : IDisposable
                 Relative = relative,
                 DisplayName = Path.GetFileName(sourcePath),
                 DurationMs = durationMs,
-                SampleCount = samples.Length,
                 SourceSampleRate = srcRate,
                 SourceChannels = srcChannels,
-                ImportedAt = DateTime.UtcNow,
             };
 
             lock (this.gate)

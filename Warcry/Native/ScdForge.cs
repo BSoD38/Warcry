@@ -45,10 +45,6 @@ public sealed class ForgedClip
 /// SCDs found 267 MS-ADPCM entries, 92 HCA and no PCM at all), append it past the end of
 /// the container and point every audio index at it, then serve it from a content-addressed
 /// synthetic path.</para>
-/// <para><b>Every index, not a scoped group.</b> Scoping matters when shadowing a real
-/// <c>Vo_Battle</c> path, where the damage and death banks must survive. This is our own
-/// path that nothing else reads, so pointing all of them at one entry means
-/// <c>soundNumber 0</c> is guaranteed to land on our audio with no group arithmetic.</para>
 /// <para><b>Nothing is shipped.</b> The container template is read from the player's own
 /// game files at runtime, which also means it always matches their client version.</para>
 /// </remarks>
@@ -170,27 +166,6 @@ public sealed class ScdForge
             lock (this.gate)
             {
                 return this.byVariant.Count;
-            }
-        }
-    }
-
-    /// <summary>Clips the engine has been asked for at least once, so are loadable now.</summary>
-    public int WarmedCount
-    {
-        get
-        {
-            lock (this.gate)
-            {
-                var warmed = 0;
-                foreach (var clip in this.byVariant.Values)
-                {
-                    if (clip.WarmedAt != 0)
-                    {
-                        warmed++;
-                    }
-                }
-
-                return warmed;
             }
         }
     }
@@ -479,9 +454,7 @@ public sealed class ScdForge
                 }
 
                 var payload = ScdWriter.AudioPayload.MsAdPcmMono(pcm, ClipLibrary.SampleRate);
-
-                // Every index, so soundNumber 0 cannot miss. This is our own path.
-                var scd = ScdWriter.PointAudioAtOneEntry(snapshot, null, payload, out _);
+                var scd = ScdWriter.PointAudioAtOneEntry(snapshot, payload);
 
                 // A battle-voice container is authored to be intermittent — that is what
                 // makes a character grunt on some swings and not others. Cloning one

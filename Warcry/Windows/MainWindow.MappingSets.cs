@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using Dalamud.Bindings.ImGui;
-using Dalamud.Game.ClientState.Objects.SubKinds;
 using Warcry.Game;
 using Warcry.Profiles;
 
@@ -70,14 +69,11 @@ public sealed partial class MainWindow
             ImGui.EndCombo();
         }
 
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Which set new mappings are added to.\n\n" +
-                "Sets exist so different people can get different clips: one aimed at you,\n" +
-                "one at your party, one at a friend by name. Every set is checked, most\n" +
-                "specific first, until one has a clip for the action.");
-        }
+        Tip(
+            "Which set new mappings are added to.\n\n" +
+            "Sets exist so different people can get different clips: one aimed at you,\n" +
+            "one at your party, one at a friend by name. Every set is checked, most\n" +
+            "specific first, until one has a clip for the action.");
 
         ImGui.SameLine();
         this.DrawSetRename(store, active);
@@ -139,11 +135,9 @@ public sealed partial class MainWindow
         if (only)
         {
             ImGui.EndDisabled();
-        }
-
-        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) && only)
-        {
-            ImGui.SetTooltip("The last set cannot be deleted — mappings need somewhere to live.");
+            Tip(
+                "The last set cannot be deleted — mappings need somewhere to live.",
+                ImGuiHoveredFlags.AllowWhenDisabled);
         }
 
         if (!ImGui.BeginPopup("##deleteset"))
@@ -204,14 +198,11 @@ public sealed partial class MainWindow
             ImGui.EndCombo();
         }
 
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Which people this set's clips are for.\n\n" +
-                "A set aimed at fewer people wins over one aimed at more, so a set for one\n" +
-                "named friend beats a set for your party, which beats a set for everyone.\n\n" +
-                "This does not decide whether they are heard at all — the People tab does.");
-        }
+        Tip(
+            "Which people this set's clips are for.\n\n" +
+            "A set aimed at fewer people wins over one aimed at more, so a set for one\n" +
+            "named friend beats a set for your party, which beats a set for everyone.\n\n" +
+            "This does not decide whether they are heard at all — the People tab does.");
 
         if (match.Audience == AudienceBucket.None && !byName)
         {
@@ -244,41 +235,13 @@ public sealed partial class MainWindow
 
         ImGui.TextDisabled("  Named here, this set plays only for them — whatever it is aimed at above.");
 
-        var name = this.setPersonName;
-        ImGui.SetNextItemWidth(200f);
-        var submitted = ImGui.InputTextWithHint(
-            "##setname", "Character name", ref name, PlayerId.MaxNameBytes, ImGuiInputTextFlags.EnterReturnsTrue);
-        this.setPersonName = name;
+        ImGui.PushID("##setnames");
+        var entered = DrawPlayerEntry("Add", ref this.setPersonName);
+        ImGui.PopID();
 
-        ImGui.SameLine();
-        if ((ImGui.Button("Add##setname") || submitted) && name.Trim().Length > 0)
+        if (entered is not null)
         {
-            this.AddSetName(store, match, new NamedPlayer { Name = name.Trim() });
-            this.setPersonName = string.Empty;
-        }
-
-        var target = Plugin.Targets.Target as IPlayerCharacter;
-        ImGui.SameLine();
-
-        if (target is null)
-        {
-            ImGui.BeginDisabled();
-        }
-
-        if (ImGui.Button(target is null ? "Add my target##setname" : $"Add {target.Name.TextValue}##setname")
-            && target is not null)
-        {
-            this.AddSetName(store, match, new NamedPlayer
-            {
-                Name = target.Name.TextValue,
-                World = target.HomeWorld.RowId,
-                WorldName = target.HomeWorld.ValueNullable?.Name.ExtractText() ?? string.Empty,
-            });
-        }
-
-        if (target is null)
-        {
-            ImGui.EndDisabled();
+            this.AddSetName(store, match, entered);
         }
 
         NamedPlayer? remove = null;
@@ -301,12 +264,9 @@ public sealed partial class MainWindow
             {
                 ImGui.SameLine();
                 ImGui.TextUnformatted("⚠ not heard");
-                if (ImGui.IsItemHovered())
-                {
-                    ImGui.SetTooltip(
-                        "They are not on the People tab's list, so nothing of theirs plays at\n" +
-                        "all and this set never gets consulted for them.");
-                }
+                Tip(
+                    "They are not on the People tab's list, so nothing of theirs plays at\n" +
+                    "all and this set never gets consulted for them.");
 
                 ImGui.SameLine();
                 if (ImGui.SmallButton("hear them"))

@@ -1,7 +1,5 @@
 using System;
 using System.Buffers.Binary;
-using System.Collections.Generic;
-using System.IO;
 
 namespace Warcry.Native;
 
@@ -34,7 +32,6 @@ public static class ScdWriter
     private const int OffTable3Count = 0x30;
     private const int OffSoundCount = 0x32;
     private const int OffAudioCount = 0x34;
-    private const int OffSoundTable = 0x38;
     private const int OffAudioTable = 0x3C;
     private const int OffTable3 = 0x40;
 
@@ -65,18 +62,12 @@ public static class ScdWriter
 
         /// <summary>Total bytes this entry occupies, header included.</summary>
         public int TotalLength => 32 + this.SubInfo.Length + this.Data.Length;
-
-        public string Describe(uint sampleRate)
-            => $"format 0x{this.Format:X2}, {this.Data.Length} bytes of audio, " +
-               $"{this.SubInfo.Length}-byte codec header (SubInfoSize 0x{this.SubInfo.Length:X})";
     }
 
     /// <summary>Parsed shape of a game SCD, enough to lift one entry out of it.</summary>
     public sealed class Template
     {
         public required byte[] Bytes { get; init; }
-
-        public required uint[] SoundOffsets { get; init; }
 
         public required uint[] AudioOffsets { get; init; }
 
@@ -89,18 +80,6 @@ public static class ScdWriter
         /// it and every index resolves wherever you like.
         /// </remarks>
         public required int AudioTableOffset { get; init; }
-
-        /// <summary>Offset of the sound-entry offset table.</summary>
-        public required int SoundTableOffset { get; init; }
-
-        /// <summary>Byte range of sound entry 0, to be copied verbatim.</summary>
-        public required int SoundEntry0Offset { get; init; }
-
-        public required int SoundEntry0Length { get; init; }
-
-        public required int Table3Entry0Offset { get; init; }
-
-        public required int Table3Entry0Length { get; init; }
     }
 
     public static bool TryParse(byte[] scd, out Template? template, out string error)
@@ -133,7 +112,6 @@ public static class ScdWriter
         var soundCount = BinaryPrimitives.ReadUInt16LittleEndian(span[OffSoundCount..]);
         var audioCount = BinaryPrimitives.ReadUInt16LittleEndian(span[OffAudioCount..]);
 
-        var soundTable = (int)BinaryPrimitives.ReadUInt32LittleEndian(span[OffSoundTable..]);
         var audioTable = (int)BinaryPrimitives.ReadUInt32LittleEndian(span[OffAudioTable..]);
         var table3 = (int)BinaryPrimitives.ReadUInt32LittleEndian(span[OffTable3..]);
 
@@ -146,10 +124,9 @@ public static class ScdWriter
         // Every offset below comes straight from the file. This function is reachable from
         // the cast path (forge initialisation), so a truncated or hostile file must come
         // back as `false`, never as an ArgumentOutOfRangeException.
-        if (!TryReadTable(span, soundTable, soundCount, out var sounds) ||
-            !TryReadTable(span, audioTable, audioCount, out var audio))
+        if (!TryReadTable(span, audioTable, audioCount, out var audio))
         {
-            error = "an entry-offset table lies outside the file";
+            error = "the audio-entry offset table lies outside the file";
             return false;
         }
 
@@ -158,15 +135,6 @@ public static class ScdWriter
         {
             error = "the group-header table lies outside the file";
             return false;
-        }
-
-        foreach (var off in sounds)
-        {
-            if (off >= (uint)scd.Length)
-            {
-                error = $"sound entry offset 0x{off:X} is past the end of the file";
-                return false;
-            }
         }
 
         foreach (var off in audio)
@@ -178,40 +146,12 @@ public static class ScdWriter
             }
         }
 
-        // Entry sizes are inferred from the gap to the next entry. Sound entries are
-        // variable-length in the real files, so this must not be assumed constant.
-        // Long arithmetic: these are file-supplied u32s, and a wrapped subtraction would
-        // read as a huge positive length.
-        var soundLen = soundCount > 1
-            ? (int)((long)sounds[1] - sounds[0])
-            : (int)((long)audio[0] - sounds[0]);
-
-        var t3Len = 0;
-        var t3Off = 0;
-        if (t3.Length > 0)
-        {
-            t3Off = (int)t3[0];
-            t3Len = t3.Length > 1 ? (int)(t3[1] - t3[0]) : 0x80;
-        }
-
-        if (soundLen <= 0 || sounds[0] + soundLen > scd.Length)
-        {
-            error = $"could not determine sound entry size (got {soundLen})";
-            return false;
-        }
-
         template = new Template
         {
             Bytes = scd,
-            SoundOffsets = sounds,
             AudioOffsets = audio,
             Table3Offsets = t3,
             AudioTableOffset = audioTable,
-            SoundTableOffset = soundTable,
-            SoundEntry0Offset = (int)sounds[0],
-            SoundEntry0Length = soundLen,
-            Table3Entry0Offset = t3Off,
-            Table3Entry0Length = t3Len,
         };
 
         error = string.Empty;
@@ -246,10 +186,13 @@ public static class ScdWriter
         => BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(0x10), (uint)(bytes.Length - 0x70));
 
     /// <summary>
-    /// Makes playback deterministic by pointing audio indices at one appended entry.
+    /// Makes playback deterministic by pointing every audio index at one appended entry.
     /// </summary>
-    /// <param name="audioIndices">Indices to redirect, or null for all of them.</param>
     /// <remarks>
+    /// <para><b>Every index, not a scoped subset.</b> Scoping would matter when shadowing a
+    /// real <c>Vo_Battle</c> path, where the damage and death banks must survive. This only
+    /// ever writes our own synthetic path, which nothing else reads, so redirecting all of
+    /// them means <c>soundNumber 0</c> cannot miss and there is no group arithmetic.</para>
     /// <para>A battle-voice SCD does not pick a waveform at random by accident — it contains
     /// an explicit weighted-random table: group records reference audio by <em>index</em>,
     /// and the table this method rewrites is what resolves an index to an offset. Point the
@@ -259,11 +202,7 @@ public static class ScdWriter
     /// overwriting an existing entry, so every byte the untouched indices depend on
     /// survives, and the payload has no length limit.</para>
     /// </remarks>
-    public static byte[] PointAudioAtOneEntry(
-        Template template,
-        IReadOnlySet<int>? audioIndices,
-        AudioPayload payload,
-        out string note)
+    public static byte[] PointAudioAtOneEntry(Template template, AudioPayload payload)
     {
         var original = template.Bytes;
         var entryOffset = Align(original.Length, 16);
@@ -272,29 +211,14 @@ public static class ScdWriter
         Array.Copy(original, bytes, original.Length);
 
         var span = bytes.AsSpan();
-        var retargeted = 0;
         for (var i = 0; i < template.AudioOffsets.Length; i++)
         {
-            if (audioIndices is not null && !audioIndices.Contains(i))
-            {
-                continue;
-            }
-
             BinaryPrimitives.WriteUInt32LittleEndian(
                 span[(template.AudioTableOffset + (i * 4))..], (uint)entryOffset);
-            retargeted++;
         }
 
         WriteAudioEntry(bytes, entryOffset, payload);
         PatchSizeField(bytes);
-
-        var scope = audioIndices is null
-            ? $"all {template.AudioOffsets.Length}"
-            : $"{retargeted} of {template.AudioOffsets.Length}";
-
-        note = $"{scope} audio indices now resolve to a new entry appended at 0x{entryOffset:X}; " +
-               $"{payload.Describe(payload.SampleRate)}; file {bytes.Length} bytes — " +
-               "every original byte preserved";
 
         return bytes;
     }

@@ -19,8 +19,8 @@ namespace Warcry.Detection;
 /// ActionEffect1/8/16/24/32 packets. It fires once per action, identically for local and
 /// remote casters, so no deduplication is needed while it is the only trigger source.</para>
 /// <para>The detour must never allocate, lock, do I/O or await. The one exception is the
-/// caster-name capture, which is gated behind <see cref="CaptureNames"/> and exists only
-/// so the Events tab can show who cast what.</para>
+/// caster-name capture, which the Events tab and the People tab's recent-caster picker
+/// both read.</para>
 /// </remarks>
 public sealed unsafe class ActionWatcher : IDisposable
 {
@@ -42,9 +42,6 @@ public sealed unsafe class ActionWatcher : IDisposable
     public bool Tripped => this.tripped;
 
     public nint HookAddress { get; }
-
-    /// <summary>Capture caster names for the Events tab. Allocates in the detour.</summary>
-    public bool CaptureNames { get; set; } = true;
 
     public ActionWatcher(
         IGameInteropProvider interop,
@@ -163,25 +160,20 @@ public sealed unsafe class ActionWatcher : IDisposable
 
             var ev = new CastEvent(
                 casterEntityId: casterEntityId,
-                casterAddress: (nint)casterPtr,
                 actionId: header->ActionId,
-                animationVariation: header->AnimationVariation,
                 globalSequence: header->GlobalSequence,
-                sourceSequence: header->SourceSequence,
-                rawActionType: header->ActionType,
-                numTargets: header->NumTargets,
                 position: new SNVector3(p.X, p.Y, p.Z),
                 soundCategory: casterPtr->SoundVolumeCategory,
                 caster: caster,
                 facts: in facts,
-                phase: TriggerPhase.Snapshot,
                 wasCasting: wasCasting,
                 castCurrent: castCurrent,
                 castTotal: castTotal);
 
-            var name = this.CaptureNames ? casterPtr->GameObject.NameString : string.Empty;
-
-            this.onCast(in ev, drop, name);
+            // The one allocation the detour is allowed. The Events tab shows it, and the
+            // People tab's "add from a recent event" picker is the only route to a named
+            // player that cannot be misspelled.
+            this.onCast(in ev, drop, casterPtr->GameObject.NameString);
         }
         catch (Exception ex)
         {

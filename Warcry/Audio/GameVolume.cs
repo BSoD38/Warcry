@@ -27,9 +27,6 @@ public sealed class GameVolume
 
     public uint Other { get; private set; } = 100;
 
-    /// <summary>0 = listen from the camera, 100 = listen from the character.</summary>
-    public uint Micpos { get; private set; }
-
     public bool MutedMaster { get; private set; }
 
     public bool MutedSe { get; private set; }
@@ -55,19 +52,18 @@ public sealed class GameVolume
     {
         var system = Plugin.GameConfig.System;
 
-        this.Master = Read(nameof(this.Master), "SoundMaster", this.Master);
-        this.Se = Read(nameof(this.Se), "SoundSe", this.Se);
-        this.Voice = Read(nameof(this.Voice), "SoundVoice", this.Voice);
-        this.Player = Read(nameof(this.Player), "SoundPlayer", this.Player);
-        this.Party = Read(nameof(this.Party), "SoundParty", this.Party);
-        this.Other = Read(nameof(this.Other), "SoundOther", this.Other);
-        this.Micpos = Read(nameof(this.Micpos), "SoundMicpos", this.Micpos);
+        this.Master = Read("SoundMaster", this.Master);
+        this.Se = Read("SoundSe", this.Se);
+        this.Voice = Read("SoundVoice", this.Voice);
+        this.Player = Read("SoundPlayer", this.Player);
+        this.Party = Read("SoundParty", this.Party);
+        this.Other = Read("SoundOther", this.Other);
 
         this.MutedMaster = ReadBool("IsSndMaster", this.MutedMaster);
         this.MutedSe = ReadBool("IsSndSe", this.MutedSe);
         this.MutedVoice = ReadBool("IsSndVoice", this.MutedVoice);
 
-        uint Read(string _, string key, uint fallback)
+        uint Read(string key, uint fallback)
             => system.TryGetUInt(key, out var v) ? v : fallback;
 
         bool ReadBool(string key, bool fallback)
@@ -99,7 +95,4 @@ public sealed class GameVolume
 
         return (this.Master / 100f) * (bus / 100f) * (category / 100f);
     }
-
-    /// <summary>0 = camera, 1 = character. Used to place the listener.</summary>
-    public float ListenerBias => this.Micpos / 100f;
 }

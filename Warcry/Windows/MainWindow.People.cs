@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using Dalamud.Bindings.ImGui;
-using Dalamud.Game.ClientState.Objects.SubKinds;
 using Warcry.Game;
 
 namespace Warcry.Windows;
@@ -41,10 +40,7 @@ public sealed partial class MainWindow
                 dirty = true;
             }
 
-            if (ImGui.IsItemHovered())
-            {
-                ImGui.SetTooltip(BucketTooltip(bucket));
-            }
+            Tip(BucketTooltip(bucket));
         }
 
         if (cfg.Audience == AudienceBucket.None)
@@ -173,17 +169,14 @@ public sealed partial class MainWindow
                 blockInstead = person;
             }
 
-            if (ImGui.IsItemHovered())
-            {
-                ImGui.SetTooltip("Move them to the blocked list, so nothing of theirs ever plays.");
-            }
+            Tip("Move them to the blocked list, so nothing of theirs ever plays.");
 
             ImGui.SameLine();
             ImGui.TextUnformatted(person.Describe());
 
-            if (person.World == 0 && ImGui.IsItemHovered())
+            if (person.World == 0)
             {
-                ImGui.SetTooltip("Matches this name on any world. Add them from your target to pin a world.");
+                Tip("Matches this name on any world. Add them from your target to pin a world.");
             }
 
             ImGui.PopID();
@@ -248,49 +241,13 @@ public sealed partial class MainWindow
     {
         ImGui.PushID(blocked ? "##addblocked" : "##addnamed");
 
-        var name = blocked ? this.newBlockedName : this.newNamedName;
-        ImGui.SetNextItemWidth(220f);
-        var submitted = ImGui.InputTextWithHint(
-            "##name", "Character name", ref name, PlayerId.MaxNameBytes, ImGuiInputTextFlags.EnterReturnsTrue);
-        Store(name);
+        var entered = blocked
+            ? DrawPlayerEntry("Block", ref this.newBlockedName)
+            : DrawPlayerEntry("Add", ref this.newNamedName);
 
-        ImGui.SameLine();
-        if ((ImGui.Button(blocked ? "Block" : "Add") || submitted) && name.Trim().Length > 0)
+        if (entered is not null)
         {
-            Add(new NamedPlayer { Name = name.Trim() });
-            Store(string.Empty);
-        }
-
-        // Target, if it is a player. Disabled rather than hidden, so the route is
-        // discoverable before you have targeted anybody.
-        var target = Plugin.Targets.Target as IPlayerCharacter;
-        ImGui.SameLine();
-
-        if (target is null)
-        {
-            ImGui.BeginDisabled();
-        }
-
-        if (ImGui.Button(target is null ? "Add my target" : $"Add {target.Name.TextValue}") && target is not null)
-        {
-            Add(new NamedPlayer
-            {
-                Name = target.Name.TextValue,
-                World = target.HomeWorld.RowId,
-                WorldName = target.HomeWorld.ValueNullable?.Name.ExtractText() ?? string.Empty,
-            });
-        }
-
-        if (target is null)
-        {
-            ImGui.EndDisabled();
-        }
-
-        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-        {
-            ImGui.SetTooltip(target is null
-                ? "Target a player in game and this fills itself in, home world included."
-                : "Adds them exactly, home world included, so a same-name player on another\nworld is not affected.");
+            Add(entered);
         }
 
         ImGui.SameLine();
@@ -307,18 +264,6 @@ public sealed partial class MainWindow
             else
             {
                 filter.AddNamed(person);
-            }
-        }
-
-        void Store(string value)
-        {
-            if (blocked)
-            {
-                this.newBlockedName = value;
-            }
-            else
-            {
-                this.newNamedName = value;
             }
         }
     }
@@ -425,45 +370,17 @@ public sealed partial class MainWindow
             ImGui.TextDisabled("  Nothing here applies while you are the only one being voiced.");
         }
 
-        var gain = cfg.OtherPlayerGain;
-        ImGui.SetNextItemWidth(220f);
-        if (ImGui.SliderFloat("Other players' volume", ref gain, 0f, 2f, "%.2f"))
-        {
-            cfg.OtherPlayerGain = gain;
-        }
+        cfg.OtherPlayerGain = Slider("Other players' volume", cfg.OtherPlayerGain, 0f, 2f, "%.2f", ref dirty,
+            "A trim on everyone but you, on top of the game's own sliders.\n" +
+            "Below 1.00 keeps other people present without competing with your own lines.");
 
-        if (ImGui.IsItemDeactivatedAfterEdit())
-        {
-            dirty = true;
-        }
-
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "A trim on everyone but you, on top of the game's own sliders.\n" +
-                "Below 1.00 keeps other people present without competing with your own lines.");
-        }
-
-        var distance = cfg.MaxDistanceYalms;
-        ImGui.SetNextItemWidth(220f);
-        if (ImGui.SliderInt("Hear people within", ref distance, 0, 100, distance == 0 ? "any distance" : "%d yalms"))
-        {
-            cfg.MaxDistanceYalms = distance;
-        }
-
-        if (ImGui.IsItemDeactivatedAfterEdit())
-        {
-            dirty = true;
-        }
-
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Past this, a line is never even requested. That is different from it being\n" +
-                "quiet: it costs no sound slot, so a distant crowd cannot crowd out the\n" +
-                "people next to you.\n\n" +
-                "Never applies to your own actions.");
-        }
+        cfg.MaxDistanceYalms = SliderInt(
+            "Hear people within", cfg.MaxDistanceYalms, 0, 100,
+            cfg.MaxDistanceYalms == 0 ? "any distance" : "%d yalms", ref dirty,
+            "Past this, a line is never even requested. That is different from it being\n" +
+            "quiet: it costs no sound slot, so a distant crowd cannot crowd out the\n" +
+            "people next to you.\n\n" +
+            "Never applies to your own actions.");
 
         ImGui.Spacing();
         ImGui.TextDisabled("  Minimum gap between one person's lines");
@@ -477,9 +394,9 @@ public sealed partial class MainWindow
 
         // NOTE: a property cannot be passed by ref, so each gap is read, edited, written
         // back — the same shape the Settings tab uses for its toggles.
-        cfg.NamedCooldownSeconds = Slider("People I named", cfg.NamedCooldownSeconds, ref dirty);
-        cfg.PartyCooldownSeconds = Slider("Party, alliance and friends", cfg.PartyCooldownSeconds, ref dirty);
-        cfg.OtherCooldownSeconds = Slider("Everyone else", cfg.OtherCooldownSeconds, ref dirty);
+        cfg.NamedCooldownSeconds = Gap("People I named", cfg.NamedCooldownSeconds, ref dirty);
+        cfg.PartyCooldownSeconds = Gap("Party, alliance and friends", cfg.PartyCooldownSeconds, ref dirty);
+        cfg.OtherCooldownSeconds = Gap("Everyone else", cfg.OtherCooldownSeconds, ref dirty);
 
         ImGui.Spacing();
 
@@ -490,39 +407,17 @@ public sealed partial class MainWindow
             dirty = true;
         }
 
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "Above the crowd size below, everyone else's gap stretches in proportion.\n" +
-                "Your own lines and their timing are never affected.\n\n" +
-                "This is what stops a hub city or an alliance raid becoming a wall of noise.");
-        }
+        Tip(
+            "Above the crowd size below, everyone else's gap stretches in proportion.\n" +
+            "Your own lines and their timing are never affected.\n\n" +
+            "This is what stops a hub city or an alliance raid becoming a wall of noise.");
 
         if (cfg.ScaleWithCrowd)
         {
-            var soft = cfg.SoftCrowdLimit;
-            ImGui.SetNextItemWidth(220f);
-            if (ImGui.SliderInt("Crowd size before quietening", ref soft, 1, 48))
-            {
-                cfg.SoftCrowdLimit = soft;
-            }
-
-            if (ImGui.IsItemDeactivatedAfterEdit())
-            {
-                dirty = true;
-            }
-
-            var max = cfg.MaxCrowdScale;
-            ImGui.SetNextItemWidth(220f);
-            if (ImGui.SliderFloat("Stretch gaps at most", ref max, 1f, 20f, "x%.1f"))
-            {
-                cfg.MaxCrowdScale = max;
-            }
-
-            if (ImGui.IsItemDeactivatedAfterEdit())
-            {
-                dirty = true;
-            }
+            cfg.SoftCrowdLimit = SliderInt(
+                "Crowd size before quietening", cfg.SoftCrowdLimit, 1, 48, "%d", ref dirty);
+            cfg.MaxCrowdScale = Slider(
+                "Stretch gaps at most", cfg.MaxCrowdScale, 1f, 20f, "x%.1f", ref dirty);
         }
 
         ImGui.Spacing();
@@ -534,55 +429,23 @@ public sealed partial class MainWindow
             dirty = true;
         }
 
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetTooltip(
-                "The gaps above bound one person. This bounds all of them together, so ten\n" +
-                "people each casting once still cannot fire ten lines at you.\n\n" +
-                "Your own lines never spend from it. Lines over the cap are dropped rather\n" +
-                "than queued: one arriving late is worse than one that never arrives.");
-        }
+        Tip(
+            "The gaps above bound one person. This bounds all of them together, so ten\n" +
+            "people each casting once still cannot fire ten lines at you.\n\n" +
+            "Your own lines never spend from it. Lines over the cap are dropped rather\n" +
+            "than queued: one arriving late is worse than one that never arrives.");
 
         if (cfg.LimitTotalRate)
         {
-            var burst = cfg.RateBurst;
-            ImGui.SetNextItemWidth(220f);
-            if (ImGui.SliderInt("Lines in a row", ref burst, 1, 12))
-            {
-                cfg.RateBurst = burst;
-            }
-
-            if (ImGui.IsItemDeactivatedAfterEdit())
-            {
-                dirty = true;
-            }
-
-            var refill = cfg.RateRefillSeconds;
-            ImGui.SetNextItemWidth(220f);
-            if (ImGui.SliderFloat("One line back every", ref refill, 0.25f, 10f, "%.2f s"))
-            {
-                cfg.RateRefillSeconds = refill;
-            }
-
-            if (ImGui.IsItemDeactivatedAfterEdit())
-            {
-                dirty = true;
-            }
+            cfg.RateBurst = SliderInt("Lines in a row", cfg.RateBurst, 1, 12, "%d", ref dirty);
+            cfg.RateRefillSeconds = Slider(
+                "One line back every", cfg.RateRefillSeconds, 0.25f, 10f, "%.2f s", ref dirty);
 
             ImGui.TextDisabled($"  {this.plugin.Throttle.TokensAvailable} of {cfg.RateBurst} available right now.");
         }
 
-        static float Slider(string label, float current, ref bool dirty)
-        {
-            var value = current;
-            ImGui.SetNextItemWidth(220f);
-            ImGui.SliderFloat(label, ref value, 0f, 20f, value <= 0f ? "off" : "%.1f s");
-            if (ImGui.IsItemDeactivatedAfterEdit())
-            {
-                dirty = true;
-            }
-
-            return value;
-        }
+        // The three per-tier gaps share one range and one "off" format.
+        static float Gap(string label, float current, ref bool dirty)
+            => Slider(label, current, 0f, 20f, current <= 0f ? "off" : "%.1f s", ref dirty);
     }
 }
