@@ -4,7 +4,7 @@
   <!-- Manifest fields. csproj-only by design: NEVER add a Warcry.json beside this file,
        DalamudPackager would silently ignore everything below. See docs/PLAN.md 3.6. -->
   <PropertyGroup>
-    <Version>0.2.0.0</Version>
+    <Version>0.3.0.0</Version>
     <Author>BSoD38</Author>
     <Name>Warcry</Name>
     <Punchline>Play your own voicelines when you use an action.</Punchline>
