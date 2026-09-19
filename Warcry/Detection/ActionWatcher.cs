@@ -11,17 +11,12 @@ using SNVector3 = System.Numerics.Vector3;
 
 namespace Warcry.Detection;
 
-/// <summary>
-/// Owns the action-detection hooks and turns raw packet payloads into <see cref="CastEvent"/>.
-/// </summary>
-/// <remarks>
-/// <para>Hooks exactly one function: <c>ActionEffectHandler.Receive</c>, the funnel for the
-/// ActionEffect1/8/16/24/32 packets. It fires once per action, identically for local and
-/// remote casters, so no deduplication is needed while it is the only trigger source.</para>
-/// <para>The detour must never allocate, lock, do I/O or await. The one exception is the
-/// caster-name capture, which the Events tab and the People tab's recent-caster picker
-/// both read.</para>
-/// </remarks>
+// Turns raw packet payloads into CastEvent. Hooks exactly one function,
+// ActionEffectHandler.Receive, the funnel for the ActionEffect1/8/16/24/32 packets: it
+// fires once per action, identically for local and remote casters, so nothing needs
+// deduplicating while it is the only trigger source.
+// The detour must never allocate, lock, do I/O or await. The caster-name capture is the
+// one exception.
 public sealed unsafe class ActionWatcher : IDisposable
 {
     public delegate void CastHandler(in CastEvent ev, DropStage drop, string casterName);
@@ -119,9 +114,9 @@ public sealed unsafe class ActionWatcher : IDisposable
                     this.slots.SlotOf(cd.Race, cd.Sex, voiceId));
             }
 
-            // Is the cast bar still running at snapshot? If so, the remaining time IS the
-            // offset between this event and the cast visually finishing — measured rather
-            // than guessed, and inherently latency-correct. See docs/PLAN.md 5.1.
+            // If the cast bar is still running at snapshot, its remaining time is the
+            // offset to the cast visually finishing, and is latency-correct by
+            // construction. See docs/PLAN.md 5.1.
             var wasCasting = false;
             var castCurrent = 0f;
             var castTotal = 0f;
@@ -141,10 +136,9 @@ public sealed unsafe class ActionWatcher : IDisposable
             // it is 0 for some of your own actions (NIN mudras).
             var isSelf = casterEntityId == this.localEntityId();
 
-            // Audience inputs. Every one of them is a field the server already populated on
-            // the spawned object, so this is six loads and a hash over at most 32 bytes —
-            // no object-table lookup, no allocation, nothing that can fail. Only gathered
-            // for a player character; nothing else can be classified anyway.
+            // Every field here is server-populated on the spawned object, so this is six
+            // loads and a hash over at most 32 bytes — no lookup, no allocation, nothing
+            // that can fail.
             var facts = drop == DropStage.None
                 ? new CasterFacts(
                     NameHash: PlayerId.Of(casterPtr->GameObject.Name),
@@ -170,7 +164,7 @@ public sealed unsafe class ActionWatcher : IDisposable
                 castCurrent: castCurrent,
                 castTotal: castTotal);
 
-            // The one allocation the detour is allowed. The Events tab shows it, and the
+            // The one allocation the detour is allowed: the Events tab shows it, and the
             // People tab's "add from a recent event" picker is the only route to a named
             // player that cannot be misspelled.
             this.onCast(in ev, drop, casterPtr->GameObject.NameString);

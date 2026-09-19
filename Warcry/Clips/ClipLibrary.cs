@@ -12,21 +12,14 @@ using NAudio.Wave.SampleProviders;
 
 namespace Warcry.Clips;
 
-/// <summary>
-/// Owns the user's imported audio: copies it in, content-addresses it, decodes it once,
-/// and hands out fresh sample providers over the shared buffer.
-/// </summary>
-/// <remarks>
-/// <para><b>Content addressing</b> is the whole design. The user picks
-/// <c>C:\stuff\fire.wav</c>; we copy it in and key everything on the SHA-256 of its
-/// bytes. Their mappings never break when they move or rename the source, importing the
-/// same clip twice is free and automatically deduplicated, the stored filename can never
-/// contain a character that breaks a path or a JSON string, re-import is idempotent, and
-/// garbage collection is a set difference.</para>
-/// <para>Metadata lives in <c>clipmeta.json</c> written with System.Text.Json — NOT in
-/// IPluginConfiguration, which serialises with TypeNameHandling.Objects and writes
-/// through a 64 MB-capped backing store. See docs/PLAN.md 5.8.</para>
-/// </remarks>
+// Owns the user's imported audio: copies it in, content-addresses it, decodes it once, and
+// hands out fresh sample providers over the shared buffer.
+// Everything is keyed on the SHA-256 of the imported bytes, so mappings survive the source
+// being moved or renamed, a second import of the same clip deduplicates, no stored filename
+// can break a path or a JSON string, and garbage collection is a set difference.
+// Metadata lives in clipmeta.json written with System.Text.Json, NOT in
+// IPluginConfiguration, which serialises with TypeNameHandling.Objects and writes through a
+// 64 MB-capped backing store. See docs/PLAN.md 5.8.
 public sealed class ClipLibrary : IDisposable
 {
     public const int SampleRate = 44100;
@@ -45,13 +38,9 @@ public sealed class ClipLibrary : IDisposable
     private readonly string manifestPath;
     private readonly IPluginLog log;
 
-    /// <summary>
-    /// Guards <see cref="cache"/> and <see cref="errors"/>. <see cref="LoadAsync"/> runs
-    /// on a worker while the ActionEffect detour calls <see cref="TryGet"/> and the UI
-    /// enumerates <see cref="Clips"/> and <see cref="Errors"/> — every access to either
-    /// collection takes this lock, and everything held under it is brief (the decode work
-    /// happens outside, into a local).
-    /// </summary>
+    // Guards cache and errors: LoadAsync runs on a worker while the ActionEffect detour
+    // calls TryGet and the UI enumerates Clips and Errors. Every access takes this lock, and
+    // everything held under it is brief — the decode work happens outside, into a local.
     private readonly object gate = new();
 
     private readonly Dictionary<string, CachedClip> cache = [];
@@ -68,7 +57,7 @@ public sealed class ClipLibrary : IDisposable
         Directory.CreateDirectory(this.clipsDir);
     }
 
-    /// <summary>A materialised snapshot — never a live view over the dictionary.</summary>
+    // A materialised snapshot, never a live view over the dictionary.
     public IReadOnlyCollection<CachedClip> Clips
     {
         get
@@ -91,7 +80,7 @@ public sealed class ClipLibrary : IDisposable
         }
     }
 
-    /// <summary>A snapshot; the loader appends from its worker thread.</summary>
+    // A snapshot; the loader appends from its worker thread.
     public IReadOnlyList<string> Errors
     {
         get
@@ -113,7 +102,7 @@ public sealed class ClipLibrary : IDisposable
         }
     }
 
-    /// <summary>Rescans and decodes everything on disk. Off the game thread.</summary>
+    // Off the game thread.
     public Task LoadAsync() => Task.Run(() =>
     {
         try
@@ -163,10 +152,7 @@ public sealed class ClipLibrary : IDisposable
         }
     });
 
-    /// <summary>
-    /// Copies a user-selected file into the library, decodes it, and returns its hash.
-    /// Idempotent — re-importing the same bytes is a no-op.
-    /// </summary>
+    // Idempotent: re-importing the same bytes is a no-op.
     public string? Import(string sourcePath)
     {
         try
@@ -306,7 +292,7 @@ public sealed class ClipLibrary : IDisposable
         }
     }
 
-    /// <summary>Decodes to mono 44.1 kHz float, which is what the mixer and the game both use.</summary>
+    // Mono 44.1 kHz float, which is what the mixer and the game both use.
     private static float[] Decode(string path, out int sourceRate, out int sourceChannels)
     {
         using WaveStream reader = Path.GetExtension(path).ToLowerInvariant() == ".ogg"

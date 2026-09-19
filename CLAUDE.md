@@ -71,8 +71,8 @@ The csproj **is** the plugin manifest (Name, Punchline, Description, Tags…). *
 - **Explicit usings**, ordered System → Dalamud/third-party → `Warcry.*`. No global usings.
 - **`sealed`** on concrete classes by default.
 - **C# 14 features** — pattern matching, collection expressions, records/readonly structs for value-shaped data (`CastEvent`, `CasterKey`, `VoiceRequest`).
-- **Comments state constraints, not narration** — the codebase's comments record *why* and cite `docs/PLAN.md` sections (e.g. "NOTE: [PluginService] is AttributeTargets.Property. A FIELD will not compile."). Match that: write a comment only when the code can't show the constraint.
-- **XML `<summary>` docs** on cross-feature contracts (interfaces, structs passed between folders); not required on internals.
+- **Plain `//` comments only — no XML doc comments.** No `<summary>`, `<remarks>`, `<param>`; no section banners. Write a comment only when the code can't show the constraint, and keep it short.
+- **Comments state how things are, not how they were found out.** Record the constraint and cite `docs/PLAN.md` where relevant (e.g. "[PluginService] is AttributeTargets.Property. A FIELD will not compile."). No investigation notes, no "used to be", no dated verification logs — that history belongs in `docs/` and git.
 - **Dispose discipline** — every hook, IPC subscription, and native handle registered in `Plugin` is torn down in `Dispose`, in reverse order.
 - **Thread discipline** — game reads/hooks run on the framework thread; ImGui only in draw; audio encode/IO off-thread. Never block either thread on file or encode work.
 

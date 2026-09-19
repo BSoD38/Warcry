@@ -6,17 +6,13 @@ using GameAction = Lumina.Excel.Sheets.Action;
 
 namespace Warcry.Profiles;
 
-/// <summary>
-/// Turns "who cast what" into "which clip", with a fallback chain and weighted variants.
-/// </summary>
-/// <remarks>
-/// <para>The key design point: fallback is per <b>(caster, action)</b>, not per caster.
-/// A profile that matches the caster but has no rule for this action falls through to
-/// the NEXT profile rather than stopping. So a hyper-specific profile covering only
-/// Limit Breaks can coexist with a generic one covering everything else.</para>
-/// <para>The chain — voiceId, voiceSlot, tribe, race, sex, wildcard, silence — is not
-/// hand-coded. It is an emergent property of ProfileStore's specificity sort.</para>
-/// </remarks>
+// Turns "who cast what" into "which clip", with a fallback chain and weighted variants.
+// Fallback is per (caster, action), not per caster: a profile that matches the caster but
+// has no rule for this action falls through to the NEXT profile rather than stopping, so a
+// profile covering only Limit Breaks can coexist with a generic one covering everything
+// else.
+// The chain — voiceId, voiceSlot, tribe, race, sex, wildcard, silence — is not hand-coded;
+// it falls out of ProfileStore's specificity sort.
 public sealed class ClipResolver
 {
     private readonly ProfileStore profiles;
@@ -24,23 +20,14 @@ public sealed class ClipResolver
 
     private readonly Dictionary<uint, ActionKey> actionCache = [];
 
-    /// <summary>Last clip played per (player, rule), so a variant never repeats back to back.</summary>
-    /// <remarks>
-    /// Keyed on the player rather than on <see cref="CasterKey"/>. Two strangers who happen
-    /// to share a race and a voice are still two people, and letting them share one
-    /// no-repeat slot would make each of them sound MORE repetitive than either alone.
-    /// </remarks>
+    // Last clip played per (player, rule), so a variant never repeats back to back. Keyed
+    // on the player rather than on CasterKey: two strangers who share a race and a voice
+    // are still two people, and one shared no-repeat slot would make each of them sound
+    // MORE repetitive than either alone.
     private readonly Dictionary<(ulong Player, string RuleId), string> lastClip = [];
 
-    /// <summary>
-    /// Ceiling on remembered (player, rule) pairs.
-    /// </summary>
-    /// <remarks>
-    /// One entry per player per rule they have triggered. With remote casters admitted this
-    /// grows with the crowd, so a raid night's worth of strangers would otherwise accumulate
-    /// for the whole session with nothing but an explicit <see cref="ClearCaches"/> to
-    /// reclaim it. Forgetting is cheap: the only cost is that one clip may repeat once.
-    /// </remarks>
+    // One entry per player per rule they have triggered, so this grows with the crowd.
+    // Forgetting is cheap: the only cost is that one clip may repeat once.
     private const int MaxRememberedPicks = 4096;
 
     private ulong rng = 0x243F6A8885A308D3;
@@ -51,7 +38,7 @@ public sealed class ClipResolver
         this.data = data;
     }
 
-    /// <summary>Resolves the action id to its sheet attributes, memoised.</summary>
+    // Memoised.
     public ActionKey GetActionKey(uint actionId)
     {
         if (this.actionCache.TryGetValue(actionId, out var cached))
@@ -62,10 +49,10 @@ public sealed class ClipResolver
         var sheet = this.data.GetExcelSheet<GameAction>();
         if (!sheet.TryGetRow(actionId, out var row))
         {
-            // NOT memoised. A miss can be transient — a lookup before the data manager is
-            // warm, say — and caching the empty placeholder would poison this action id
-            // for the whole session: no category/job/cast rule would ever match it, the
-            // auto-attack skip would misread category 0, and casts-only would drop it.
+            // NOT memoised: a miss can be transient, and caching the empty placeholder
+            // would poison this action id for the session — no category/job/cast rule would
+            // match it, the auto-attack skip would misread category 0, and casts-only would
+            // drop it.
             return new ActionKey(actionId, string.Empty, 0, 0, 0f);
         }
 
@@ -87,10 +74,8 @@ public sealed class ClipResolver
         return key;
     }
 
-    /// <summary>
-    /// Null means silence, which is a valid answer. Pass a list to collect an
-    /// explanation — leave it null on the hot path.
-    /// </summary>
+    // Null means silence, which is a valid answer. trace collects an explanation; leave it
+    // null on the hot path.
     public ResolvedClip? Resolve(in CasterIdentity who, in ActionKey action, List<string>? trace = null)
     {
         foreach (var profile in this.profiles.Sorted)
@@ -103,11 +88,10 @@ public sealed class ClipResolver
 
             if (!profile.Match.Accepts(in who))
             {
-                // Which half missed is most of the value of the trace: a profile aimed at
-                // your party skipping a stranger is working as asked, whereas one skipping
-                // your party member is a setup mistake. If the appearance half matched,
-                // the target half is what refused. Costs nothing when trace is null — the
-                // null-conditional call does not evaluate its argument.
+                // Which half missed is most of the trace's value: a profile aimed at your
+                // party skipping a stranger works as asked, one skipping your party member
+                // is a setup mistake. Free when trace is null — the null-conditional call
+                // does not evaluate its argument.
                 trace?.Add(profile.Match.Accepts(who.Voice)
                     ? $"skip '{profile.Name}': not aimed at {Audience.Describe(who.Audience)}"
                     : $"skip '{profile.Name}': character does not match");
@@ -148,13 +132,10 @@ public sealed class ClipResolver
         return null;
     }
 
-    /// <summary>
-    /// Advances the shared xorshift64* state. One generator, two scalings below — the
-    /// advance-and-multiply lives here so a future change cannot be made in one call
-    /// site and missed in the other.
-    /// </summary>
-    /// <remarks>xorshift64* rather than <c>Random.Shared</c>: no contention on the game
-    /// thread, no allocation, and deterministic given the seed.</remarks>
+    // Advances the shared xorshift64* state. One generator, two scalings below, so a change
+    // cannot be made at one call site and missed at the other.
+    // xorshift64* rather than Random.Shared: no contention on the game thread, no
+    // allocation, deterministic given the seed.
     private ulong NextRaw()
     {
         this.rng ^= this.rng >> 12;
@@ -163,15 +144,13 @@ public sealed class ClipResolver
         return this.rng * 0x2545F4914F6CDD1DUL;
     }
 
-    /// <summary>Uniform in [0, 1).</summary>
+    // Uniform in [0, 1).
     private float NextUnit() => (this.NextRaw() >> 11) / (float)(1UL << 53);
 
-    /// <summary>Uniform integer in [0, exclusiveMax).</summary>
+    // Uniform integer in [0, exclusiveMax).
     private int NextBelow(int exclusiveMax) => (int)(this.NextRaw() % (ulong)exclusiveMax);
 
-    /// <summary>
-    /// Base pitch plus a fresh uniform roll in the random spread, as a playback rate.
-    /// </summary>
+    // Base pitch plus a fresh uniform roll in the random spread, as a playback rate.
     private float RollRate(VoiceRule rule)
     {
         var semitones = rule.PitchSemitones;
@@ -184,10 +163,8 @@ public sealed class ClipResolver
         return Math.Abs(semitones) < 0.001f ? 1f : Warcry.Clips.CachedClip.SemitonesToRate(semitones);
     }
 
-    /// <summary>
-    /// Cumulative-weight pick that avoids repeating the previous clip when the rule has
-    /// two or more. This is the single highest-value anti-annoyance measure in the plugin.
-    /// </summary>
+    // Cumulative-weight pick that avoids repeating the previous clip when the rule has two
+    // or more.
     private ClipRef? PickWeighted(VoiceRule rule, ulong player)
     {
         if (rule.Clips.Count == 0)
@@ -197,9 +174,9 @@ public sealed class ClipResolver
 
         if (rule.Clips.Count == 1)
         {
-            // Recorded even though there is nothing to avoid yet: the moment a second
-            // clip is added to the rule, "don't repeat what just played" must already
-            // know what just played.
+            // Recorded even though there is nothing to avoid yet: the moment a second clip
+            // is added to the rule, "don't repeat what just played" must already know what
+            // just played.
             this.Remember(player, rule.Id, rule.Clips[0].Hash);
             return rule.Clips[0];
         }
@@ -245,14 +222,13 @@ public sealed class ClipResolver
         return rule.Clips[0];
     }
 
-    /// <summary>Records what just played for this (player, rule), within a fixed bound.</summary>
+    // Records what just played for this (player, rule), within a fixed bound.
     private void Remember(ulong player, string ruleId, string hash)
     {
         var key = (player, ruleId);
 
-        // Dropping the whole table is the right trade against tracking an eviction order
-        // on the cast path. Overwriting an existing key is always free, so this only ever
-        // trips when a genuinely new pair arrives at the ceiling.
+        // Dropping the whole table beats tracking an eviction order on the cast path.
+        // Overwriting an existing key is free, so this only trips on a genuinely new pair.
         if (this.lastClip.Count >= MaxRememberedPicks && !this.lastClip.ContainsKey(key))
         {
             this.lastClip.Clear();

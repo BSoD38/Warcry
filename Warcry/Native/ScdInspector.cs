@@ -4,16 +4,13 @@ using System.Collections.Generic;
 
 namespace Warcry.Native;
 
-/// <summary>
-/// One weighted-random choice inside a sound group. The 8-byte on-disk record is four
-/// <c>u16</c> — cue index, audio index, cumulative weight, local index — of which only
-/// these two are read back.
-/// </summary>
-/// <param name="AudioIndex">Index into the audio-entry table — what actually gets played.</param>
-/// <param name="CumulativeWeight">Running total; the engine rolls against the group's final value.</param>
+// One weighted-random choice inside a sound group. The 8-byte on-disk record is four u16 —
+// cue index, audio index, cumulative weight, local index — of which only these two are read
+// back. AudioIndex indexes the audio-entry table; the engine rolls against the group's
+// final CumulativeWeight.
 public readonly record struct ScdGroupRecord(ushort AudioIndex, ushort CumulativeWeight);
 
-/// <summary>A sound group — what <c>PlaySound</c>'s <c>soundNumber</c> selects.</summary>
+// A sound group — what PlaySound's soundNumber selects.
 public sealed class ScdGroup
 {
     public required int Id { get; init; }
@@ -23,36 +20,28 @@ public sealed class ScdGroup
     public required List<ScdGroupRecord> Records { get; init; }
 }
 
-/// <summary>
-/// Explains how an SCD chooses what to play.
-/// </summary>
-/// <remarks>
-/// <para><b>The structure, derived from <c>Vo_Battle_PC_ros_Ma_fr.scd</c> (2026-08-17).</b>
-/// The count at 0x30 is the number of <em>sound groups</em>. The table at 0x40 points at
-/// that many fixed-size group headers (128 bytes each), and the variable-length group
-/// bodies follow contiguously after the last header, in the same order.</para>
-/// <para>Each body is a 32-byte header — first byte is the record count, the u32 at +0x0C
-/// is the group id — followed by that many 8-byte records of four <c>u16</c>:
-/// cue index, audio index, cumulative weight, local index.</para>
-/// <para><b>The consequence.</b> <c>soundNumber</c> selects the group, not the waveform.
-/// The group then picks a record by weighted random. That is why one <c>soundNumber</c>
-/// still yields several different grunts, and it is not something a caller can override.
-/// See <see cref="ScdWriter.PointAudioAtOneEntry"/> for the way around it.</para>
-/// </remarks>
+// How an SCD chooses what to play.
+//
+// The count at 0x30 is the number of sound groups. The table at 0x40 points at that many
+// fixed-size group headers (128 bytes each), and the variable-length group bodies follow
+// contiguously after the last header, in the same order. Each body is a 32-byte header —
+// first byte is the record count, the u32 at +0x0C is the group id — followed by that many
+// 8-byte records of four u16: cue index, audio index, cumulative weight, local index.
+//
+// So soundNumber selects the group, not the waveform, and the group picks a record by
+// weighted random: one soundNumber yields several different grunts, and a caller cannot
+// override that. See ScdWriter.PointAudioAtOneEntry for the way around it.
 public static class ScdInspector
 {
     private const int GroupHeaderSize = 0x80;
     private const int GroupBodyHeaderSize = 0x20;
     private const int RecordSize = 8;
 
-    /// <summary>A real group holds a handful of choices; 251 means we are misreading.</summary>
+    // A real group holds a handful of choices; a bigger count means we are misreading.
     private const int MaxPlausibleRecords = 64;
 
-    /// <summary>
-    /// Parses the group bodies. Returns an empty list rather than throwing on anything
-    /// unexpected — this is a diagnostic, and a file that does not fit the model is itself
-    /// the finding.
-    /// </summary>
+    // Returns an empty list rather than throwing on anything unexpected: this is a
+    // diagnostic, and a file that does not fit the model is itself the finding.
     private static List<ScdGroup> ParseGroups(ScdWriter.Template template, out string error)
     {
         var groups = new List<ScdGroup>();
@@ -69,8 +58,8 @@ public static class ScdInspector
             ? (int)(template.Table3Offsets[1] - template.Table3Offsets[0])
             : GroupHeaderSize;
 
-        // Bodies begin immediately after the last fixed-size header. Inferred from
-        // Vo_Battle_PC_ros_Ma_fr.scd and NOT general — see the validation below.
+        // Bodies begin immediately after the last fixed-size header. Holds for battle-voice
+        // files and is NOT general — see the validation below.
         var cursor = (int)template.Table3Offsets[^1] + headerStride;
 
         for (var i = 0; i < template.Table3Offsets.Length; i++)
@@ -84,12 +73,10 @@ public static class ScdInspector
             int count = span[cursor];
             var id = (int)BinaryPrimitives.ReadUInt32LittleEndian(span[(cursor + 0x0C)..]);
 
-            // ---- validation ----
-            // The layout above is a guess that happens to hold for battle-voice files. On a
-            // 30-group monster SCD it produced ids like -16777216, 251-record groups and
-            // negative weights — plausible-looking output that was pure garbage. Refuse
-            // rather than report nonsense: a wrong index set here would also make
-            // PointAudioAtOneEntry overwrite the wrong bank.
+            // The layout above holds for battle-voice files but not for every SCD; on other
+            // files it yields impossible ids, record counts and weights. Refuse rather than
+            // report nonsense — a wrong index set here would also make PointAudioAtOneEntry
+            // overwrite the wrong bank.
             if (id != i)
             {
                 error = $"group {i} reports id {id} — the body layout does not hold for this file";
@@ -144,7 +131,7 @@ public static class ScdInspector
         return groups;
     }
 
-    /// <summary>Discards a partial parse. Half a wrong answer is worse than none.</summary>
+    // Discards a partial parse. Half a wrong answer is worse than none.
     private static List<ScdGroup> Reject(List<ScdGroup> groups, ref string error)
     {
         groups.Clear();
@@ -152,33 +139,20 @@ public static class ScdInspector
         return groups;
     }
 
-    /// <summary>
-    /// Offset in a group body of the float that governs how often the group fires.
-    /// </summary>
-    /// <remarks>
-    /// ⚠ <b>Inferred, not confirmed.</b> Every group in a battle-voice file carries the same
-    /// value here — 0.4335 — and the 128-byte group header blocks hold their volume-looking
-    /// floats at 1.0, so this is not volume. A ~43% chance also matches the observed fact
-    /// that the game does not grunt on every action.
-    /// <para>Setting it to 1 in a container of our own is safe whatever it turns out to be:
-    /// if the reading is right, playback becomes certain; if it is actually a volume, our
-    /// clips get louder and the plugin volume slider compensates.</para>
-    /// </remarks>
+    // ⚠ Inferred: offset in a group body of the float governing how often the group fires.
+    // Every group in a battle-voice file holds 0.4335 here while the group headers'
+    // volume-looking floats sit at 1.0, so it is not volume, and ~43% matches the game not
+    // grunting on every action. Setting it to 1 in a container of our own is safe either
+    // way: playback becomes certain, or the clip is louder and the volume slider
+    // compensates.
     private const int PlayChanceOffset = 0x08;
 
-    /// <summary>
-    /// Rewrites a cloned container so it plays every time it is asked to.
-    /// </summary>
-    /// <remarks>
-    /// <para>A battle-voice file is authored to be intermittent — that is what makes a
-    /// character grunt on some swings and not others. Cloning one for our own use inherits
-    /// that, which presents as "the native path works, but only fires occasionally".</para>
-    /// <para>Two independent sources of loss are removed: the per-group chance above, and
-    /// the cumulative weights, which in the template sum to 30 rather than 100. Rescaling
-    /// the running total to end at 100 is correct whether the engine rolls against the
-    /// group's own total or against a fixed denominator, and it changes no offsets — only
-    /// the <c>u16</c> already in each record.</para>
-    /// </remarks>
+    // A battle-voice file is authored to be intermittent, which is what makes a character
+    // grunt on some swings and not others; a clone inherits that and presents as "native
+    // works, but only fires occasionally". Two sources of loss are removed: the per-group
+    // chance above, and the cumulative weights, which in the template sum to 30 rather than
+    // 100. Rescaling the running total to end at 100 is correct whether the engine rolls
+    // against the group's own total or a fixed denominator, and changes no offsets.
     public static int ForceDeterministicPlayback(byte[] scd, out string note)
     {
         if (!ScdWriter.TryParse(scd, out var template, out var parseError) || template is null)

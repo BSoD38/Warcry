@@ -5,27 +5,19 @@ using Warcry.Profiles;
 
 namespace Warcry.Windows;
 
-/// <summary>
-/// The mapping-set bar at the top of the Actions tab: which set new mappings land in, and
-/// who that set plays for.
-/// </summary>
-/// <remarks>
-/// <para>A "mapping set" is a <see cref="VoiceProfile"/>. The word profile never reaches
-/// the user here — what they are choosing is a group of action-to-clip mappings and the
-/// people it applies to, and every set written before targets existed is aimed at everyone,
-/// which is why <see cref="ProfileMatch.Audience"/> defaults that way.</para>
-/// <para>Two different questions live one line apart on purpose. A set's target decides
-/// WHICH clips someone gets; the People tab decides whether they are heard at all. Aiming a
-/// set at someone the People tab never admits is silent, so both this editor and that tab
-/// say so rather than leaving it to be found.</para>
-/// </remarks>
+// The mapping-set bar at the top of the Actions tab: which set new mappings land in, and
+// who that set plays for. A "mapping set" is a VoiceProfile; the word profile never reaches
+// the user here.
+// Two different questions live one line apart: a set's target decides WHICH clips someone
+// gets, the People tab decides whether they are heard at all. Aiming a set at someone the
+// People tab never admits is silent, so both places say so.
 public sealed partial class MainWindow
 {
     private string selectedProfileId = string.Empty;
     private string renameBuffer = string.Empty;
     private string setPersonName = string.Empty;
 
-    /// <summary>The set new mappings are assigned into. Never null — creates the default.</summary>
+    // Never null — creates the default set if there is none.
     private VoiceProfile ActiveProfile(ProfileStore store)
     {
         foreach (var profile in store.Profiles)
@@ -60,8 +52,8 @@ public sealed partial class MainWindow
             ImGui.Separator();
             if (ImGui.Selectable("New set..."))
             {
-                // Aimed at nobody in particular until the user says otherwise, which is the
-                // same starting point the first set has.
+                // Aimed at nobody in particular until the user says otherwise, like the
+                // first set.
                 var created = store.Add(new VoiceProfile { Name = $"Set {store.Profiles.Count + 1}" });
                 this.selectedProfileId = created.Id;
             }
@@ -164,7 +156,7 @@ public sealed partial class MainWindow
         ImGui.EndPopup();
     }
 
-    /// <summary>Who this set plays for: tiers, or specific people by name.</summary>
+    // Who this set plays for: tiers, or specific people by name.
     private void DrawSetTarget(ProfileStore store, VoiceProfile active)
     {
         var match = active.Match;
@@ -213,14 +205,9 @@ public sealed partial class MainWindow
         this.DrawSetNames(store, active);
     }
 
-    /// <summary>
-    /// The named-players half of a set's target.
-    /// </summary>
-    /// <remarks>
-    /// Kept collapsed until it has something in it. Most sets are aimed at a tier, and a
-    /// name list permanently open above the mapping list would push the actual work of the
-    /// tab off the screen.
-    /// </remarks>
+    // The named-players half of a set's target, collapsed until it has something in it: most
+    // sets are aimed at a tier, and a name list permanently open above the mapping list
+    // would push the work of the tab off the screen.
     private void DrawSetNames(ProfileStore store, VoiceProfile active)
     {
         var match = active.Match;
@@ -258,8 +245,7 @@ public sealed partial class MainWindow
             ImGui.SameLine();
             ImGui.TextUnformatted(person.Describe());
 
-            // The silent failure this whole split can produce, caught at the point of entry
-            // rather than only on the People tab.
+            // Catch the silent failure here rather than only on the People tab.
             if (!this.plugin.Audience.IsNamed(person.Name))
             {
                 ImGui.SameLine();
@@ -278,9 +264,8 @@ public sealed partial class MainWindow
                         WorldName = person.WorldName,
                     });
 
-                    // Naming someone is a clear statement that you want to hear them, but
-                    // the tier they arrive in still has to be switched on or the list is
-                    // inert. Switching it on here is what makes one click actually work.
+                    // Naming someone states that you want to hear them, but the tier they
+                    // arrive in still has to be switched on or the list is inert.
                     this.plugin.Config.Audience |= AudienceBucket.Named;
                     this.plugin.Config.Save();
                 }
@@ -316,7 +301,7 @@ public sealed partial class MainWindow
         store.Save();
     }
 
-    /// <summary>Distinct recent caster names, newest first. Shared by the pickers.</summary>
+    // Distinct recent caster names, newest first. Shared by the pickers.
     private IReadOnlyList<string> RecentCasterNames(int limit)
     {
         this.recentCasters.Clear();

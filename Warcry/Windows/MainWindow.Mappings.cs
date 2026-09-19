@@ -9,7 +9,7 @@ using GameAction = Lumina.Excel.Sheets.Action;
 
 namespace Warcry.Windows;
 
-/// <summary>The Mappings tab: the editor that assigns clips to actions.</summary>
+// The Mappings tab: the editor that assigns clips to actions.
 public sealed partial class MainWindow
 {
     private string actionSearch = string.Empty;
@@ -36,12 +36,10 @@ public sealed partial class MainWindow
             return;
         }
 
-        // ---- which set, and who it plays for ----
         this.DrawMappingSetBar(store);
 
         ImGui.Separator();
 
-        // ---- job filter ----
         var currentJob = CurrentJobId();
         if (this.followCurrentJob && currentJob != 0 && currentJob != this.jobFilter)
         {
@@ -93,7 +91,6 @@ public sealed partial class MainWindow
 
         ImGui.Separator();
 
-        // ---- add a mapping ----
         ImGui.TextUnformatted("Assign a clip to an action");
 
         ImGui.SetNextItemWidth(300);
@@ -266,7 +263,6 @@ public sealed partial class MainWindow
 
         ImGui.Separator();
 
-        // ---- existing mappings ----
         var totalRules = 0;
         foreach (var profile in store.Profiles)
         {
@@ -281,8 +277,8 @@ public sealed partial class MainWindow
 
         ImGui.SameLine();
 
-        // Same wording as the Settings tab. Two labels for one setting had readers
-        // hunting for the difference between them.
+        // Same wording as the Settings tab: two labels for one setting reads as two
+        // settings.
         var fallback = this.plugin.Config.FallBackToTestTone;
         if (ImGui.Checkbox("Beep when an action has no clip", ref fallback))
         {
@@ -290,11 +286,10 @@ public sealed partial class MainWindow
             this.plugin.Config.Save();
         }
 
-        // Readiness sits here rather than on a tab of its own: this is the moment the user
-        // has just changed a mapping and wants to know it took effect.
+        // Readiness sits here because this is the moment the user has just changed a
+        // mapping and wants to know it took effect.
         this.DrawPrepareBar();
 
-        // ---- bulk pitch ----
         if (shown > 0)
         {
             var scope = this.jobFilter == 0 ? "all" : JobLabel(this.jobFilter);
@@ -331,8 +326,7 @@ public sealed partial class MainWindow
             if (store.Profiles.Count > 1)
             {
                 // Marked rather than filtered: seeing every set at once is how you notice
-                // that two of them cover the same action for overlapping people, which is
-                // the mistake multiple sets makes easy to make.
+                // two of them covering the same action for overlapping people.
                 var active = profile.Id == this.selectedProfileId;
                 ImGui.TextDisabled(
                     $"{(active ? "> " : "  ")}{profile.Name}  {profile.Match.Describe(RaceName, TribeName)}");
@@ -384,10 +378,10 @@ public sealed partial class MainWindow
                 ImGui.SameLine();
                 ImGui.TextDisabled("->");
 
-                // Unassigning a rule's last clip deletes the whole rule from the store.
-                // The widgets after the clip loop must then not draw: they belong to an
-                // object no longer in the document, and an edit to them would Save() a
-                // document without it — silently discarding the edit.
+                // Unassigning a rule's last clip deletes the whole rule from the store, so
+                // the widgets after the clip loop must not draw: they belong to an object no
+                // longer in the document, and an edit to them would Save() a document
+                // without it, discarding the edit.
                 var ruleDeleted = false;
 
                 foreach (var clipRef in rule.Clips.ToArray())
@@ -430,7 +424,6 @@ public sealed partial class MainWindow
                     ImGui.TextDisabled($"({rule.Clips.Count} variants, no immediate repeat)");
                 }
 
-                // ---- pitch gauges ----
                 ImGui.Indent(22f);
 
                 var pitch = rule.PitchSemitones;
@@ -440,8 +433,8 @@ public sealed partial class MainWindow
                     rule.PitchSemitones = pitch;
                 }
 
-                // Save on release, not per-frame: SavePluginConfig-style writes are
-                // synchronous and dragging a slider would stutter the game.
+                // Save on release: these writes are synchronous, and dragging a slider would
+                // stutter the game.
                 if (ImGui.IsItemDeactivatedAfterEdit())
                 {
                     store.Save();
@@ -511,11 +504,9 @@ public sealed partial class MainWindow
         ImGui.EndChild();
     }
 
-    /// <summary>
-    /// A rule's action name, drawn as a link back into the picker at the top of the tab
-    /// so an existing mapping can be re-selected without hunting for it again.
-    /// Returns true on the frame it is clicked.
-    /// </summary>
+    // A rule's action name, drawn as a link back into the picker at the top of the tab, so
+    // an existing mapping can be re-selected without hunting for it. True on the frame it
+    // is clicked.
     private bool DrawRuleActionName(string name, uint actionId)
     {
         // Rules that match by name or category carry no id, so there is nothing to load
@@ -535,7 +526,7 @@ public sealed partial class MainWindow
 
         // Text does not look clickable, so underline it under the cursor. Hover state is
         // valid for the item just submitted, so the row drawn this frame is the one
-        // underlined — no frame lag.
+        // underlined.
         var min = ImGui.GetItemRectMin();
         var max = ImGui.GetItemRectMax();
         ImGui.GetWindowDrawList().AddLine(
@@ -549,10 +540,8 @@ public sealed partial class MainWindow
         return ImGui.IsItemClicked();
     }
 
-    /// <summary>
-    /// The single definition of "shown" — used for the count, the bulk-apply scope and
-    /// the list itself, so the button can never affect something you cannot see.
-    /// </summary>
+    // The single definition of "shown", used for the count, the bulk-apply scope and the
+    // list itself, so the button can never affect something you cannot see.
     private bool IsRuleShown(VoiceRule rule)
     {
         if (rule.When.ActionIds.Count == 0)
@@ -602,17 +591,15 @@ public sealed partial class MainWindow
         return lp?.ClassJob.RowId ?? 0u;
     }
 
-    /// <summary>Localized — for display only. The logic lives in <see cref="JobIndex"/>.</summary>
+    // Localized — display only.
     private string JobLabel(uint jobId) => this.plugin.Jobs.JobLabel(jobId);
 
-    /// <summary>
-    /// Job membership, shared with the pack builder's warm scoping via
-    /// <see cref="JobIndex"/> — the editor's list and the warm set can never disagree.
-    /// </summary>
+    // Through JobIndex, so the editor's list and the pack builder's warm set can never
+    // disagree.
     private bool ActionBelongsToJob(in GameAction row, uint jobId)
         => this.plugin.Jobs.ActionBelongsToJob(in row, jobId);
 
-    /// <summary>Why a given action did or did not land in the filtered list.</summary>
+    // Why a given action did or did not land in the filtered list.
     private string ActionDebugInfo(uint actionId)
     {
         var sheet = Plugin.Data.GetExcelSheet<GameAction>();
@@ -637,8 +624,8 @@ public sealed partial class MainWindow
             return true;
         }
 
-        // Memoised inside JobIndex, keyed (job, action) — sheet facts never change, so
-        // the cache needs no invalidation when the filter moves.
+        // Memoised inside JobIndex, keyed (job, action). Sheet facts never change, so the
+        // cache needs no invalidation when the filter moves.
         return this.plugin.Jobs.ActionBelongsToJob(actionId, this.jobFilter);
     }
 
@@ -694,9 +681,9 @@ public sealed partial class MainWindow
 
                 if (this.jobFilter != 0)
                 {
-                    // The job constraint is itself the noise filter, so IsPlayerAction is
-                    // not required here — that flag is false for conditional actions like
-                    // Enchanted Riposte, which are exactly what we must not hide.
+                    // The job constraint is itself the noise filter, so IsPlayerAction is not
+                    // required: that flag is false for conditional actions like Enchanted
+                    // Riposte, which are exactly what must not be hidden.
                     if (!this.ActionBelongsToJob(in row, this.jobFilter))
                     {
                         continue;

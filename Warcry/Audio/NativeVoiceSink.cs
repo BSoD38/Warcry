@@ -11,109 +11,73 @@ using EngineVector4 = FFXIVClientStructs.FFXIV.Common.Math.Vector4;
 
 namespace Warcry.Audio;
 
-/// <summary>
-/// Plays through the game's own sound engine: a clip we encode, in a container we assemble,
-/// handed to <c>SoundManager::PlaySound</c>.
-/// </summary>
-/// <remarks>
-/// <para><b>What this buys over the managed sink.</b> The engine does the mixing, so the
-/// audio lands on the game's own bus, follows the game's output device, obeys its volume
-/// rules, and is positioned by the same code that positions every other sound in the world.
-/// None of that is emulated.</para>
-/// <para><b>Gain is deliberately not scaled by the game's sliders here.</b> The managed sink
-/// reads <c>SoundMaster</c>/<c>SoundVoice</c> and multiplies them in by hand because it has
-/// to. This sink must not: the engine applies its own bus volume downstream, and applying
-/// them twice squares the curve and makes everything vanish at low settings.</para>
-/// <para><b>Warm-up is real and visible.</b> Resource loading is asynchronous, so the first
-/// request for a newly forged path returns before the bytes are in memory. That first play
-/// is used as the warm-up and reported as a refusal, which lets a composite fall back to the
-/// managed sink for exactly one line rather than dropping it.</para>
-/// <para><b>Position is read at dispatch, not at snapshot.</b> A cast line is held back by
-/// its own cast bar (~0.45 s), so <c>VoiceRequest.Position</c> is already stale by the time
-/// it plays. The caster is located again here; the request's position survives only as the
-/// answer for a caster that has since despawned.</para>
-/// <para><b>Following costs ownership of a pool slot.</b> See <see cref="VoicePositionMode"/>:
-/// in <see cref="VoicePositionMode.Follow"/> the call passes <c>autoRelease: false</c> and
-/// this class must release the slot itself. The pool is 256 entries shared with the entire
-/// client, so a leak here silences the game, not just the plugin — which is why every exit
-/// path releases and why <see cref="Forced"/>/<see cref="Orphaned"/> are counted and shown
-/// in the UI rather than logged and forgotten.</para>
-/// <para><b>Following takes two writes, and only one of them is audible.</b> Repositioning a
-/// sounding voice goes through the audio driver — see <see cref="PushToDriver"/>. Writing the
-/// <c>SoundData</c> record is measurably not enough, which cost several in-game rounds to
-/// establish, so do not "simplify" the second call away.</para>
-/// <para>Verified end to end in <c>docs/native-spike.md</c>, including PLAN.md §6
-/// (b)–(e) — volume sliders, positional attenuation, sustained load — and the speed
-/// argument, all passed in game on 2026-08-18. Re-verify after a game patch or
-/// FFXIVClientStructs bump. Follow mode is newer and its own in-game criteria are listed
-/// in docs/PLAN.md §9.</para>
-/// </remarks>
+// Plays through the game's own sound engine: a clip we encode, in a container we assemble,
+// handed to SoundManager::PlaySound. The engine does the mixing, so the audio lands on the
+// game's own bus, follows its output device, obeys its volume rules, and is positioned by
+// the same code that positions every other sound in the world.
+//
+// Gain is NOT scaled by the game's sliders here. The managed sink reads
+// SoundMaster/SoundVoice and multiplies them in by hand because it has to; the engine
+// applies its own bus volume downstream, and applying them twice squares the curve and makes
+// everything vanish at low settings.
+//
+// Resource loading is asynchronous, so the first request for a newly forged path returns
+// before the bytes are in memory. That first play is the warm-up and is reported as a
+// refusal, which lets the composite fall back to the managed sink for one line.
+//
+// Position is read at dispatch, not at snapshot: a cast line is held back by its own cast
+// bar, so VoiceRequest.Position is already stale. The caster is located again here, and the
+// request's position survives only as the answer for a caster that has since despawned.
+//
+// Following costs ownership of a pool slot: in VoicePositionMode.Follow the call passes
+// autoRelease: false and this class must release the slot itself. The pool is 256 entries
+// shared with the entire client, so a leak silences the game and not just the plugin — hence
+// a release on every exit path, and Forced/Orphaned counted in the UI rather than logged.
+//
+// Following takes two writes and only one of them is audible: repositioning a sounding voice
+// goes through the audio driver, see PushToDriver. Writing the SoundData record is not
+// enough on its own, so do not "simplify" the second call away.
+//
+// Verified end to end in docs/native-spike.md, including PLAN.md §6 (b)–(e) — volume
+// sliders, positional attenuation, sustained load — and the speed argument. Re-verify after
+// a game patch or FFXIVClientStructs bump. Follow mode's own in-game criteria are in
+// docs/PLAN.md §9.
 public sealed unsafe class NativeVoiceSink : IDisposable
 {
-    /// <summary>
-    /// Assumed tail beyond a clip's own length before an engine-owned voice slot is
-    /// considered free.
-    /// </summary>
-    /// <remarks>
-    /// Applies to the modes that do not retain a handle. Nothing is released on this
-    /// deadline — the engine reclaims its own slot — so the number only has to be a decent
-    /// estimate for the concurrency count. Contrast <see cref="ReleaseGraceSeconds"/>.
-    /// </remarks>
+    // Assumed tail beyond a clip's own length before an engine-owned slot counts as free.
+    // Nothing is released on this deadline — the engine reclaims its own slot — so it only
+    // has to be a decent estimate for the concurrency count. Contrast ReleaseGraceSeconds.
     private const double TailSeconds = 0.25;
 
-    /// <summary>
-    /// Extra time past a retained voice's expected end before its slot is taken back by
-    /// force.
-    /// </summary>
-    /// <remarks>
-    /// Deliberately more generous than <see cref="TailSeconds"/>, because this deadline
-    /// <em>releases</em>: expiring early cuts a line off mid-word. It is the backstop for a
-    /// voice whose natural end is never observed — the length estimate being wrong, a frame
-    /// hitch, <c>IsPlaying()</c> lying — and reaching it while the sound is still playing is
-    /// counted as <see cref="Forced"/>, because that means the estimate is off.
-    /// </remarks>
+    // Extra time past a retained voice's expected end before its slot is taken back by
+    // force. More generous than TailSeconds because this deadline releases, and expiring
+    // early cuts a line off mid-word. It is the backstop for a voice whose natural end is
+    // never observed — a wrong length estimate, a frame hitch, IsPlaying() lying — and
+    // reaching it while the sound still plays counts as Forced.
     private const double ReleaseGraceSeconds = 1.0;
 
-    /// <summary>
-    /// How long a warm-up is given to land before the path is trusted for a real play.
-    /// </summary>
-    /// <remarks>
-    /// A local file behind a Penumbra redirect loads in well under this. The window only
-    /// matters when a clip is forged and used almost immediately; the throttle cooldown is
-    /// an order of magnitude longer in normal play.
-    /// </remarks>
+    // How long a warm-up is given to land before the path is trusted for a real play. A
+    // local file behind a Penumbra redirect loads in well under this; the window only
+    // matters when a clip is forged and used almost immediately.
     private const double WarmGraceSeconds = 0.25;
 
-    /// <summary>
-    /// A retained voice that ends sooner than this after a driver position push is taken as
-    /// proof the push stopped it.
-    /// </summary>
-    /// <remarks>
-    /// Comfortably under the shortest clip in a real pack (0.35 s at the time of writing) so
-    /// a genuinely short line retiring normally cannot trip it, and comfortably over the
-    /// single frame it actually took.
-    /// </remarks>
+    // A retained voice ending sooner than this after a driver position push is taken as
+    // proof the push stopped it. Under the shortest clip in a real pack, so a short line
+    // retiring normally cannot trip it, and well over the single frame a kill takes.
     private const double DriverKillSeconds = 0.25;
 
-    /// <summary>
-    /// The audio index handed to <c>PlaySound</c>. Every index in our containers resolves
-    /// to the one clip, so it is always zero — and it is a field rather than a literal at
-    /// the call site because the identity check below has to compare against exactly what
-    /// was passed.
-    /// </summary>
+    // The audio index handed to PlaySound. Every index in our containers resolves to the one
+    // clip, so it is always zero; a field rather than a literal because the identity check
+    // below has to compare against exactly what was passed.
     private const uint SoundNumber = 0u;
 
-    /// <summary>One voice the engine is currently sounding on our behalf.</summary>
-    /// <remarks>
-    /// <para><see cref="Handle"/> is an integer rather than a <c>SoundData*</c> so that
-    /// every use has to cast, which keeps "this is not trusted until checked" visible at
-    /// the point of use. Zero means the engine owns the slot and this entry is nothing but
-    /// a concurrency count with a clock on it.</para>
-    /// <para>The pool is a fixed 256-entry array (<c>SoundDataMemory</c> is
-    /// <c>256 * 0xD0</c> bytes), so a stale handle is never a <em>dangling</em> pointer:
-    /// reading through it cannot fault, it can only describe somebody else's sound. That is
-    /// what makes <see cref="PathUtf8"/> a usable guard rather than wishful thinking.</para>
-    /// </remarks>
+    // One voice the engine is currently sounding on our behalf. Handle is an integer rather
+    // than a SoundData* so every use has to cast, keeping "not trusted until checked" visible
+    // at the point of use; zero means the engine owns the slot and this entry is a
+    // concurrency count with a clock on it.
+    // The pool is a fixed 256-entry array (SoundDataMemory is 256 * 0xD0 bytes), so a stale
+    // handle is never dangling: reading through it cannot fault, it can only describe
+    // somebody else's sound. That is what makes PathUtf8 a usable guard.
     private struct LiveVoice
     {
         public nint Handle;
@@ -121,20 +85,17 @@ public sealed unsafe class NativeVoiceSink : IDisposable
         public long ExpiresAt;
         public string GamePath;
 
-        /// <summary>
-        /// The name the engine itself holds for this slot, snapshotted at play time — the
-        /// Penumbra-resolved local file, not the game path we asked for. Null when the
-        /// engine held no name, in which case <c>autoRelease: false</c> stands alone.
-        /// </summary>
+        // The name the engine holds for this slot, snapshotted at play time: the
+        // Penumbra-resolved local file, not the game path we asked for. Null when the engine
+        // held no name, in which case autoRelease: false stands alone.
         public byte[]? PathUtf8;
 
-        /// <summary>Whether <c>IsPlaying()</c> has ever been observed true.</summary>
+        // Whether IsPlaying() has ever been observed true.
         public bool Started;
 
-        /// <summary>When the engine took this voice, for the driver-push kill check.</summary>
+        // When the engine took this voice, for the driver-push kill check.
         public long PlayedAt;
 
-        /// <summary>Whether a driver-level position push was made against this voice.</summary>
         public bool DriverPushed;
     }
 
@@ -144,10 +105,8 @@ public sealed unsafe class NativeVoiceSink : IDisposable
     private readonly CasterLocator locator;
     private readonly List<LiveVoice> live = [];
 
-    /// <summary>
-    /// Latched once the driver-level position push is known not to be available, so a
-    /// per-frame loop does not retry a call it has already been told it cannot make.
-    /// </summary>
+    // Latched once the driver-level position push is known unavailable, so a per-frame loop
+    // does not retry a call it has already been told it cannot make.
     private bool driverUnusable;
 
     public NativeVoiceSink(IPluginLog log, Configuration config, ScdForge forge, CasterLocator locator)
@@ -177,12 +136,9 @@ public sealed unsafe class NativeVoiceSink : IDisposable
 
     public int ActiveVoices => this.live.Count;
 
-    /// <summary>How many voices this sink is currently repositioning every frame.</summary>
-    /// <remarks>
-    /// The number that matters for pool safety: it must come back to zero after every
-    /// line. A floor it never returns to is a leak, and a leaked slot is one the whole
-    /// game client cannot use.
-    /// </remarks>
+    // The number that matters for pool safety: it must come back to zero after every line.
+    // A floor it never returns to is a leak, and a leaked slot is one the whole game client
+    // cannot use.
     public int Following
     {
         get
@@ -200,50 +156,32 @@ public sealed unsafe class NativeVoiceSink : IDisposable
         }
     }
 
-    /// <summary>Retained slots handed back to the engine.</summary>
+    // Retained slots handed back to the engine.
     public long Released { get; private set; }
 
-    /// <summary>
-    /// Retained slots reclaimed on the expiry backstop while still playing — i.e. lines cut
-    /// short because the length estimate was wrong.
-    /// </summary>
+    // Retained slots reclaimed on the expiry backstop while still playing: lines cut short
+    // because the length estimate was wrong.
     public long Forced { get; private set; }
 
-    /// <summary>
-    /// Retained slots the engine recycled out from under us despite <c>autoRelease: false</c>.
-    /// </summary>
-    /// <remarks>
-    /// Should be permanently zero. Anything else falsifies the assumption follow mode is
-    /// built on, and is the reason this is a counter on the Status tab rather than a log
-    /// line — see docs/PLAN.md §9.
-    /// </remarks>
+    // Retained slots the engine recycled out from under us despite autoRelease: false.
+    // Should be permanently zero — anything else falsifies the assumption follow mode is
+    // built on, which is why it is a counter on the Status tab. See docs/PLAN.md §9.
     public long Orphaned { get; private set; }
 
-    /// <summary>Position updates actually pushed to the engine.</summary>
-    /// <remarks>
-    /// The one number that separates the two ways following can fail. Zero while a line is
-    /// audible means this sink never called <c>SetPosition</c> — our bug. Climbing while the
-    /// sound plainly does not move means the engine does not honour a live position change
-    /// on a playing voice — assumption (b) in docs/PLAN.md §9, and the end of this approach.
-    /// </remarks>
+    // Position updates pushed to the engine. Separates the two ways following can fail: zero
+    // while a line is audible means this sink never called SetPosition, our bug; climbing
+    // while the sound plainly does not move means the engine does not honour a live position
+    // change on a playing voice, which is the end of this approach. See docs/PLAN.md §9.
     public long Moves { get; private set; }
 
-    /// <summary>Position pushes the audio driver actually accepted.</summary>
-    /// <remarks>
-    /// Distinct from <see cref="Moves"/> on purpose. <see cref="Moves"/> counts writes to
-    /// the <c>SoundData</c> record, which is demonstrably inaudible on its own; this counts
-    /// the ones that reached <c>SoundController</c>, which is the path that can actually be
-    /// heard. Moves climbing while this stays at zero means the driver is out of reach.
-    /// </remarks>
+    // Position pushes the audio driver accepted. Moves counts writes to the SoundData
+    // record, which is inaudible on its own; this counts the ones that reached
+    // SoundController, the path that can be heard. Moves climbing while this stays at zero
+    // means the driver is out of reach.
     public long DriverMoves { get; private set; }
 
-    /// <summary>
-    /// Why the last request was not played natively, or empty if it was.
-    /// </summary>
-    /// <remarks>
-    /// Every path out of <see cref="TryPlay"/> sets this. A silent boolean was enough to
-    /// hide a three-play warm-up ramp behind what looked like "native does not work".
-    /// </remarks>
+    // Empty if the last request played. Every path out of TryPlay sets it: a silent boolean
+    // is enough to hide a warm-up ramp behind what looks like "native does not work".
     public string LastRefusal { get; private set; } = string.Empty;
 
     public bool TryPlay(in VoiceRequest request)
@@ -287,10 +225,10 @@ public sealed unsafe class NativeVoiceSink : IDisposable
             return false;
         }
 
-        // The warm-up is issued at registration or on a job switch, not charged to a
-        // play. A cold clip reaching this point means the warm scoping missed it — the
-        // player demonstrably CAN cast it — so heal immediately: warm it now, refuse
-        // this one line, and every later one plays.
+        // The warm-up is issued at registration or on a job switch, never charged to a play.
+        // A cold clip reaching this point means the warm scoping missed it — the player
+        // demonstrably can cast it — so warm it now, refuse this one line, and every later
+        // one plays.
         if (clip.WarmedAt == 0)
         {
             this.Warm(clip);
@@ -350,7 +288,7 @@ public sealed unsafe class NativeVoiceSink : IDisposable
             this.live.Add(new LiveVoice
             {
                 // Retained only in follow mode. Every other mode hands the sound over and
-                // forgets it, which is the call shape verified in game on 2026-08-18.
+                // forgets it.
                 Handle = follow ? (nint)result : 0,
                 CasterEntityId = request.CasterEntityId,
                 ExpiresAt = Stopwatch.GetTimestamp()
@@ -372,11 +310,8 @@ public sealed unsafe class NativeVoiceSink : IDisposable
         }
     }
 
-    /// <summary>
-    /// Decides whether a just-registered clip warms immediately. Set by the pack builder,
-    /// which scopes warming to the current job; null warms everything, the pre-builder
-    /// behaviour.
-    /// </summary>
+    // Whether a just-registered clip warms immediately. Set by the pack builder, which
+    // scopes warming to the active jobs; null warms everything.
     public Func<ForgedClip, bool>? WarmGate { get; set; }
 
     public void Update()
@@ -420,9 +355,8 @@ public sealed unsafe class NativeVoiceSink : IDisposable
             if (!Owns(sound, in voice))
             {
                 // The slot describes a different sound, so autoRelease: false did not hold
-                // and this is not ours to release or to move. Drop the reference and count
-                // it — this is the measurement that falsifies follow mode's one assumption,
-                // not a routine event.
+                // and this is not ours to release or move. Counted, not routine: it is the
+                // measurement that falsifies follow mode's one assumption.
                 this.Orphaned++;
                 this.live.RemoveAt(i);
                 this.log.Warning(
@@ -463,11 +397,10 @@ public sealed unsafe class NativeVoiceSink : IDisposable
             }
 
             // Unconditional, and deliberately NOT gated on the voice having started.
-            // Position is state on a slot we own, not an event: a voice still loading
-            // needs the right position for the instant it does start, and an earlier
-            // build that only moved *started* voices did not follow at all whenever
-            // IsPlaying() stayed false — which looks precisely like the engine ignoring
-            // SetPosition. Keeping the two decisions apart is the point.
+            // Position is state on a slot we own, not an event: a voice still loading needs
+            // the right position for the instant it does start. Moving only started voices
+            // means no following at all whenever IsPlaying() stays false, which looks
+            // precisely like the engine ignoring SetPosition.
             if (this.locator.TryGetPosition(voice.CasterEntityId, out var position))
             {
                 // Both, in this order. The first keeps the record coherent — its position
@@ -484,15 +417,9 @@ public sealed unsafe class NativeVoiceSink : IDisposable
         }
     }
 
-    /// <summary>
-    /// Stops and releases every voice this sink still owns. Called on a zone change and
-    /// during teardown.
-    /// </summary>
-    /// <remarks>
-    /// A voiceline surviving a loading screen is worse than none, and a retained slot
-    /// surviving a plugin unload is worse still — it is gone from the game's pool until
-    /// the client restarts.
-    /// </remarks>
+    // Called on a zone change and during teardown. A voiceline surviving a loading screen is
+    // worse than none, and a retained slot surviving a plugin unload is worse still — it is
+    // gone from the game's pool until the client restarts.
     public void StopAll()
     {
         var manager = SoundManager.Instance();
@@ -514,22 +441,12 @@ public sealed unsafe class NativeVoiceSink : IDisposable
         this.live.Clear();
     }
 
-    /// <summary>
-    /// Asks the engine for a freshly registered path at zero volume, purely to make it load.
-    /// </summary>
-    /// <remarks>
-    /// <para>This exists because the first request for any path returns before the resource
-    /// is in memory. Doing it here, the instant the redirect is registered, means the cost
-    /// lands on an idle frame instead of on a voiceline.</para>
-    /// <para>The earlier design charged the warm-up to the first real play and refused that
-    /// line — which, combined with the encode also costing a play, meant the <b>third</b>
-    /// use of a given clip was the first one you actually heard through the engine. With
-    /// several mapped actions and a cooldown between them, that ramp is long enough to look
-    /// exactly like the native path not working at all.</para>
-    /// <para>A warm-up is always <c>autoRelease: true</c> and non-positional, whatever the
-    /// configured position mode is: it is a resource load, not a sound, and must never be
-    /// tracked or retained.</para>
-    /// </remarks>
+    // Asks the engine for a freshly registered path at zero volume, purely to make it load.
+    // The first request for any path returns before the resource is in memory, so doing it
+    // the instant the redirect is registered puts the cost on an idle frame instead of on a
+    // voiceline.
+    // Always autoRelease: true and non-positional, whatever the configured position mode is:
+    // this is a resource load, not a sound, and must never be tracked or retained.
     public void Warm(ForgedClip clip)
     {
         if (clip.WarmedAt != 0)
@@ -571,20 +488,13 @@ public sealed unsafe class NativeVoiceSink : IDisposable
         }
     }
 
-    /// <summary>
-    /// Snapshots the name the engine itself holds for a slot, taken while the pointer is
-    /// certainly still ours — the instant <c>PlaySound</c> returned it.
-    /// </summary>
-    /// <remarks>
-    /// <para>Snapshotting rather than asserting. The first build here demanded the engine
-    /// report the game path we asked for; it does not — it reports the <em>Penumbra-resolved
-    /// local file</em>, e.g. <c>C:/…/.cache/scd/&lt;hash&gt;.scd</c> for
-    /// <c>sound/vfx/warcry/clip/&lt;hash&gt;.scd</c>. Demanding equality threw the check
-    /// away for every voice; keeping whatever it says gives a real one back, since a
-    /// recycled slot names a different file either way.</para>
-    /// <para>Null only when there is no name to read at all, in which case
-    /// <c>autoRelease: false</c> stands alone.</para>
-    /// </remarks>
+    // Snapshots the name the engine holds for a slot, taken the instant PlaySound returned
+    // it, while the pointer is certainly still ours.
+    // Snapshotted rather than asserted: the engine reports the Penumbra-resolved local file,
+    // e.g. C:/…/.cache/scd/<hash>.scd for sound/vfx/warcry/clip/<hash>.scd, so demanding the
+    // game path back would throw the check away for every voice. Whatever it says is still a
+    // real test, since a recycled slot names a different file.
+    // Null only when there is no name to read, in which case autoRelease: false stands alone.
     private byte[]? SnapshotIdentity(SoundData* sound, string gamePath)
     {
         try
@@ -599,19 +509,15 @@ public sealed unsafe class NativeVoiceSink : IDisposable
         }
     }
 
-    /// <summary>Whether a retained slot still holds the voice we put in it.</summary>
-    /// <remarks>
-    /// <para>Deliberately does <b>not</b> consult <c>IsActive</c>. This test must never
-    /// produce a false negative: a voice wrongly called an orphan is dropped without being
-    /// released, which leaks the slot — the exact outcome the test exists to prevent. And
-    /// <c>IsActive</c> has two states where its value is a guess rather than a fact, both
-    /// of which this is asked about every frame: a voice whose resource is still loading,
-    /// and one that has finished playing but is still ours to hand back.</para>
-    /// <para>What is left is the name and the audio index, which change when the engine
-    /// hands the slot to something else. When the name could not be calibrated there is no
-    /// real test — which is honest: the guarantee is <c>autoRelease: false</c>, and this
-    /// only ever checked it rather than providing it.</para>
-    /// </remarks>
+    // Whether a retained slot still holds the voice we put in it.
+    // Deliberately does NOT consult IsActive. This test must never produce a false negative:
+    // a voice wrongly called an orphan is dropped without being released, which leaks the
+    // slot — the exact outcome the test exists to prevent. IsActive is a guess rather than a
+    // fact in two states this is asked about every frame: a voice whose resource is still
+    // loading, and one that has finished playing but is still ours to hand back.
+    // What is left is the name and the audio index, which change when the engine hands the
+    // slot to something else. With no name to compare there is no real test, which is
+    // honest: the guarantee is autoRelease: false, and this only ever checked it.
     private static bool Owns(SoundData* sound, in LiveVoice voice)
     {
         if (sound == null || sound->SoundNumber != SoundNumber)
@@ -628,31 +534,17 @@ public sealed unsafe class NativeVoiceSink : IDisposable
         return name.HasValue && name.AsSpan().SequenceEqual(voice.PathUtf8);
     }
 
-    /// <summary>
-    /// Pushes the position to the audio driver, which is what actually moves a voice that
-    /// is already sounding.
-    /// </summary>
-    /// <remarks>
-    /// <para><b>This is the call that makes following work.</b> Confirmed in game on
-    /// 2026-08-24: with it, a line tracks the caster through a displacement skill; without
-    /// it, it does not. Nothing else in this class moves a sounding voice.</para>
-    /// <para><b>Why the record write is not enough.</b> Measured the same day:
-    /// <c>SoundData::SetPosition</c> alone is inaudible. Two displacement casts logged ~280
-    /// updates each over 11.24 y and 14.78 y of real movement, the slot reading back exactly
-    /// what was written, <c>positional=true</c> — and the line stayed where it started both
-    /// times. The mixer does not re-read the record once a voice is playing.</para>
-    /// <para><b>⚠ W must be 1.</b> The component is unmapped, and it is not cosmetic: passed
-    /// as 0, every voice died one frame — 5 ms — after its first push, where the same clip
-    /// otherwise played its full 1.37 s. The audible result was total silence. Read as a
-    /// homogeneous coordinate it wants 1, which is what works; do not "tidy" this to 0.</para>
-    /// <para>Guarded on the resolved address, because the function is located by byte
-    /// signature. On a patch where the signature stops matching, calling it is a call
-    /// through null — an access violation, from inside a per-frame loop, taking the client
-    /// with it. The refusal is latched and named instead. The kill check in
-    /// <see cref="Retire"/> is the second half of that guard: if a future patch makes this
-    /// call destructive again, it switches itself off after one line rather than silencing
-    /// the session.</para>
-    /// </remarks>
+    // The call that makes following work: nothing else in this class moves a sounding voice.
+    // SoundData::SetPosition alone is inaudible — the mixer does not re-read the record once
+    // a voice is playing — so the record write is not enough on its own.
+    // ⚠ W must be 1. The component is unmapped and it is not cosmetic: passed as 0, every
+    // voice dies one frame after its first push, and the audible result is total silence.
+    // Read as a homogeneous coordinate it wants 1. Do not "tidy" this to 0.
+    // Guarded on the resolved address, because the function is located by byte signature: on
+    // a patch where the signature stops matching, calling it is a call through null — an
+    // access violation from inside a per-frame loop, taking the client with it. The kill
+    // check in Retire is the second half of that guard, switching following off after one
+    // line rather than silencing the session.
     private bool PushToDriver(SoundData* sound, Vector3 position)
     {
         if (this.driverUnusable)
@@ -684,8 +576,8 @@ public sealed unsafe class NativeVoiceSink : IDisposable
         target.Y = position.Y;
         target.Z = position.Z;
 
-        // NOT cosmetic, and not zero. 0 here stopped every voice one frame after the push;
-        // 1 follows correctly. Verified in game 2026-08-24 — see the remarks above.
+        // Not cosmetic, and not zero: 0 stops every voice one frame after the push. See
+        // above.
         target.W = 1f;
 
         controller->SetPosition(&target);
@@ -693,14 +585,13 @@ public sealed unsafe class NativeVoiceSink : IDisposable
         return true;
     }
 
-    /// <summary>Releases a voice, first checking the driver push did not stop it.</summary>
+    // Releases a voice, first checking the driver push did not stop it.
     private void Retire(SoundManager* manager, SoundData* sound, in LiveVoice voice, bool stopFirst)
     {
-        // A voice that stops moments after we touched the driver was stopped BY touching
-        // the driver — which is exactly what a wrong W did on 2026-08-24, and it cost every
-        // line in the session. The call is correct now, so this should never fire; it stays
-        // because a game patch can make it destructive again, and one clipped line is a far
-        // better failure than a silent session.
+        // A voice that stops moments after we touched the driver was stopped BY touching the
+        // driver, which is what a wrong W does. The call is correct, so this should never
+        // fire; it stays because a game patch can make the call destructive again, and one
+        // clipped line is a better failure than a silent session.
         if (voice.DriverPushed && !stopFirst && !this.driverUnusable)
         {
             var lived = (Stopwatch.GetTimestamp() - voice.PlayedAt) / (double)Stopwatch.Frequency;
@@ -720,7 +611,7 @@ public sealed unsafe class NativeVoiceSink : IDisposable
         this.Release(manager, sound, stopFirst, voice.GamePath);
     }
 
-    /// <summary>Hands one slot back to the engine.</summary>
+    // Hands one slot back to the engine.
     private void Release(SoundManager* manager, SoundData* sound, bool stopFirst, string gamePath)
     {
         try
@@ -748,14 +639,8 @@ public sealed unsafe class NativeVoiceSink : IDisposable
         }
     }
 
-    /// <summary>
-    /// The game's own Player/Party/Other classification, straight through.
-    /// </summary>
-    /// <remarks>
-    /// Read from <c>Character+0x2369</c>, which is the same byte the engine uses for its own
-    /// sounds — so a plugin line and a native one are categorised identically rather than
-    /// merely similarly.
-    /// </remarks>
+    // Character+0x2369 is the same byte the engine uses for its own sounds, so a plugin line
+    // and a native one are categorised identically rather than merely similarly.
     private static SoundVolumeCategory CategoryOf(byte soundCategory) => soundCategory switch
     {
         0 => SoundVolumeCategory.Player,

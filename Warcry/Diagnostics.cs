@@ -4,7 +4,7 @@ using Warcry.Game;
 
 namespace Warcry;
 
-/// <summary>Which pipeline stage discarded an event.</summary>
+// Which pipeline stage discarded an event.
 public enum DropStage : byte
 {
     None = 0,
@@ -14,43 +14,21 @@ public enum DropStage : byte
     Throttle = 4,
     NoClip = 5,
 
-    /// <summary>
-    /// The sink refused the request — at the cap, muted, unavailable, or (in NativeOnly
-    /// mode) any native refusal. The reason is on <c>CompositeVoiceSink.LastRefusal</c>.
-    /// </summary>
+    // At the cap, muted, unavailable, or any native refusal in NativeOnly mode. The reason
+    // is on CompositeVoiceSink.LastRefusal.
     SinkRefused = 6,
     Gate = 7,
 
-    /// <summary>
-    /// Playback is switched off, so the event was detected and deliberately not played.
-    /// </summary>
-    /// <remarks>
-    /// Its own stage because it is the single most common reason for "I hear nothing" and
-    /// used to be indistinguishable from a bug: the early return recorded no drop at all,
-    /// so the Events tab said "ok" for a line that never sounded.
-    /// </remarks>
+    // Playback switched off. Its own stage so the Events tab does not report "ok" for a
+    // line that never sounded.
     PlaybackOff = 8,
 
-    /// <summary>
-    /// The cast bar had further to run than the scheduler will hold a line for, so the
-    /// line was refused rather than fired into a fight that had moved on.
-    /// </summary>
-    /// <remarks>
-    /// Its own stage rather than <see cref="SinkRefused"/>: no sink was ever asked. Folding
-    /// the two together pointed anyone debugging a long cast at the audio path instead of
-    /// at the delay ceiling.
-    /// </remarks>
+    // The cast bar had further to run than the scheduler will hold a line for. Not
+    // SinkRefused: no sink is asked.
     TooFarOut = 9,
 
-    /// <summary>
-    /// Other people's lines were arriving faster than the global rate cap allows, so this
-    /// one was dropped rather than queued.
-    /// </summary>
-    /// <remarks>
-    /// Separate from <see cref="Throttle"/> because the fix is different: a cooldown drop
-    /// means one person is casting too often, a rate drop means the crowd as a whole is.
-    /// Never applies to your own actions — you bypass the bucket.
-    /// </remarks>
+    // The global rate cap. Separate from Throttle: a cooldown drop means one person is
+    // casting too often, a rate drop means the crowd is. Never applies to your own actions.
     RateLimited = 10,
 }
 
@@ -61,13 +39,10 @@ public readonly struct DiagRow
     public readonly string CasterName;
     public readonly DropStage Drop;
 
-    /// <summary>
-    /// The narrowest audience tier this caster fell into, or <see cref="AudienceBucket.None"/>
-    /// for anything that never reached the filter.
-    /// </summary>
+    // None for anything that never reached the filter.
     public readonly AudienceBucket Audience;
 
-    /// <summary>Why the audience filter refused them, or empty. Always a literal.</summary>
+    // Always a literal.
     public readonly string AudienceRefusal;
 
     public DiagRow(
@@ -87,14 +62,9 @@ public readonly struct DiagRow
     }
 }
 
-/// <summary>
-/// Fixed-capacity ring of recent pipeline decisions, backing the Events tab.
-/// </summary>
-/// <remarks>
-/// Deliberately lock-free: both the writer (the ActionEffect detour) and the reader
-/// (ImGui Draw) run on the game main thread — Lane A in docs/PLAN.md 4. If a producer
-/// ever moves off that thread this needs revisiting.
-/// </remarks>
+// Ring of recent pipeline decisions, backing the Events tab. Lock-free because both the
+// writer (the ActionEffect detour) and the reader (ImGui Draw) run on the game main thread
+// — Lane A in docs/PLAN.md 4. Revisit if a producer ever moves off it.
 public sealed class Diagnostics
 {
     public const int Capacity = 200;
@@ -121,7 +91,7 @@ public sealed class Diagnostics
         this.dropCounts[(int)row.Drop]++;
     }
 
-    /// <summary>Newest first.</summary>
+    // Newest first.
     public DiagRow At(int index)
     {
         var start = (this.next - 1 + Capacity) % Capacity;
@@ -130,7 +100,7 @@ public sealed class Diagnostics
 
     public long DropCount(DropStage stage) => this.dropCounts[(int)stage];
 
-    /// <summary>Counts a discard that happened after the event was already recorded.</summary>
+    // For a discard that happened after the event was already recorded.
     public void Drop(DropStage stage) => this.dropCounts[(int)stage]++;
 
     public void Clear()

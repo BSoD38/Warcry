@@ -5,7 +5,7 @@ using Dalamud.Bindings.ImGui;
 
 namespace Warcry.Windows;
 
-/// <summary>The Clips tab: the imported-audio library.</summary>
+// The Clips tab: the imported-audio library.
 public sealed partial class MainWindow
 {
     private void DrawClips()

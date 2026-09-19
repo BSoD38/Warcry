@@ -5,24 +5,11 @@ using Warcry.Native;
 
 namespace Warcry.Windows;
 
-/// <summary>
-/// Clip preparation: the compact readiness bar on the Actions tab, and the full
-/// per-clip breakdown under Details on the Status tab.
-/// </summary>
-/// <remarks>
-/// <para>This used to be a tab of its own called "Sound pack", which asked the user to
-/// know that clips have to be encoded and registered before the game engine can play
-/// them. That is true and it is entirely our problem, so the two things a user can act on
-/// (is it ready, and press the button) now sit where they were already working, and the
-/// per-clip detail moved to Status with the other diagnostics.</para>
-/// <para>Preparing also happens on its own, a couple of seconds after any edit, so the
-/// button is a reassurance rather than a step.</para>
-/// </remarks>
+// Clip preparation: the readiness bar on the Actions tab, and the per-clip breakdown under
+// Details on the Status tab. Preparing also runs on its own a couple of seconds after any
+// edit, so the button is a reassurance rather than a step.
 public sealed partial class MainWindow
 {
-    /// <summary>
-    /// One line and one button, for the tab where the user just changed a mapping.
-    /// </summary>
     private void DrawPrepareBar()
     {
         // Only the game engine needs prepared clips. The built-in player reads the audio
@@ -78,9 +65,6 @@ public sealed partial class MainWindow
             "so you only need this button if something looks stuck.");
     }
 
-    /// <summary>
-    /// The full breakdown, for the Details section of the Status tab.
-    /// </summary>
     private void DrawClipPreparation()
     {
         var packs = this.plugin.Packs;
@@ -139,8 +123,8 @@ public sealed partial class MainWindow
             }
             else if (forge.TryGetFailure(entry.VariantKey, out var why))
             {
-                // The encode gave up after Apply returned, so the plan entry itself
-                // knows nothing about it until the next Apply. Ask the forge directly.
+                // The encode gave up after Apply returned, so the plan entry knows nothing
+                // about it until the next Apply. Ask the forge directly.
                 state = $"blocked: {why}";
             }
             else
@@ -156,11 +140,7 @@ public sealed partial class MainWindow
         ImGui.TreePop();
     }
 
-    /// <summary>
-    /// Who the reachable count is counted for. While you are the only audience that is just
-    /// your job, which is what this used to say unconditionally; once other people can be
-    /// heard, their jobs are reachable too and saying "your job" would understate it.
-    /// </summary>
+    // Who the reachable count covers: your job, plus the jobs of anyone audible around you.
     private string ReachableFrom(string jobLabel)
     {
         var others = this.plugin.Packs.ActiveJobs.Count - 1;

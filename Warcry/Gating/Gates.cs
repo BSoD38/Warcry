@@ -2,22 +2,13 @@ using Dalamud.Game.ClientState.Conditions;
 
 namespace Warcry.Gating;
 
-/// <summary>
-/// Global "should anything play at all right now" checks, evaluated before the audience
-/// filter and before any clip work.
-/// </summary>
-/// <remarks>
-/// This is the layer whose absence was the plugin's worst behaviour: without it, battle
-/// cries fire during cutscenes. Loading-screen suppression is unconditional — a voiceline
-/// arriving after a zone transition belongs to a fight that is already over.
-/// </remarks>
+// "Should anything play at all right now", before the audience filter and any clip work.
 public sealed class Gates
 {
     private readonly Configuration config;
 
     public Gates(Configuration config) => this.config = config;
 
-    /// <summary>Human-readable reason playback is currently suppressed, or empty.</summary>
     public string Reason { get; private set; } = string.Empty;
 
     public bool IsSuppressed()
@@ -32,7 +23,8 @@ public sealed class Gates
             return true;
         }
 
-        // Never configurable: mid-transition audio is always wrong.
+        // Never configurable: a line arriving after a zone transition belongs to a fight
+        // that is already over.
         if (condition[ConditionFlag.BetweenAreas] || condition[ConditionFlag.BetweenAreas51])
         {
             this.Reason = "zoning";

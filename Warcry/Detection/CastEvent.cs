@@ -3,80 +3,50 @@ using Warcry.Game;
 
 namespace Warcry.Detection;
 
-/// <summary>
-/// One action use, captured on the game main thread. Deliberately a readonly struct
-/// passed by <c>in</c>: the detour must not allocate.
-/// </summary>
+// One action use, captured on the game main thread. A readonly struct passed by in: the
+// detour must not allocate.
 public readonly struct CastEvent
 {
     public readonly uint CasterEntityId;
 
-    /// <summary>
-    /// Header @0x08. Settled in game as the mapping key: it consistently names the
-    /// action actually pressed, where SpellId (@0x1C) named the animation.
-    /// </summary>
+    // Header @0x08, the mapping key: it names the action actually pressed, where SpellId
+    // (@0x1C) names the animation.
     public readonly uint ActionId;
 
-    /// <summary>Distinguishes one cast from the next. The Events tab keys its rows on it.</summary>
     public readonly uint GlobalSequence;
 
     public readonly Vector3 Position;
 
-    /// <summary>The game's own Player/Party/Other classification, from Character+0x2369.</summary>
+    // The game's own Player/Party/Other classification, from Character+0x2369.
     public readonly byte SoundCategory;
 
     public readonly CasterKey Caster;
 
-    /// <summary>
-    /// Who the caster is to you, captured in the detour so the audience filter never has
-    /// to touch the game object again.
-    /// </summary>
-    /// <remarks>
-    /// The name arrives hashed rather than as a string: the named-player list is checked on
-    /// every cast, and <c>NameString</c> allocates. The relation bits are read through the
-    /// ClientStructs properties rather than by masking <c>RelationFlags</c> here, because
-    /// the bit layout is the client's and a struct update should be free to move it.
-    /// </remarks>
+    // Captured in the detour so the audience filter never touches the game object again.
+    // The name arrives hashed because NameString allocates and the named list is checked
+    // every cast. The relation bits come from the ClientStructs properties rather than a
+    // RelationFlags mask here, so a struct update is free to move the layout.
     public readonly CasterFacts Facts;
 
-    /// <summary>Was this you? The 32-bit entity id compare, never SourceSequence.</summary>
     public bool IsLocalPlayer => this.Facts.IsSelf;
 
-    /// <summary>Was the caster's cast bar still running at snapshot?</summary>
     public readonly bool WasCasting;
 
     public readonly float CastCurrent;
     public readonly float CastTotal;
 
-    /// <summary>
-    /// Most a snapshot can precede its own cast bar completing.
-    /// </summary>
-    /// <remarks>
-    /// The slidecast window is latency-dependent, measured at 0.40-0.46 s in game
-    /// (docs/PLAN.md 5.1) — generous headroom over that for a bad connection, and still an
-    /// order of magnitude below any real cast. That gap is what makes it usable as the test
-    /// for whether the running bar is even this action's.
-    /// </remarks>
+    // Most a snapshot can precede its cast bar completing. The slidecast window is
+    // 0.40-0.46 s (docs/PLAN.md 5.1); this leaves headroom for a bad connection and stays
+    // an order of magnitude below any real cast.
     private const float SlidecastCeilingSeconds = 1.5f;
 
-    /// <summary>
-    /// Seconds of cast bar still to run at snapshot — i.e. the MEASURED offset between
-    /// this event and the cast visually finishing. If this is consistently non-zero for
-    /// cast spells, we can schedule playback off it directly and never ask the user to
-    /// tune a latency-dependent constant.
-    /// </summary>
-    /// <remarks>
-    /// Zero unless the running bar plausibly belongs to this action. <c>GetCastInfo</c>
-    /// reports whatever the caster is casting <em>now</em>, which need not be what just
-    /// snapshotted: an off-GCD ability woven into a long cast reads the LONG CAST's
-    /// remaining time, so an instant would be held back by seconds — or, past the
-    /// scheduler's ceiling, dropped outright. Because snapshot precedes the bar completing
-    /// by one slidecast window and never by seconds, a bar with more than
-    /// <see cref="SlidecastCeilingSeconds"/> left is someone else's and earns no offset.
-    /// Deliberately a magnitude test and not an action-id comparison: the bar's id and the
-    /// packet's may legitimately differ for an upgraded spell, and guessing wrong there
-    /// would silently disable the offset for every hard cast.
-    /// </remarks>
+    // Seconds of cast bar still to run at snapshot — the measured offset to the cast
+    // visually finishing, so playback needs no user-tuned latency constant.
+    // Zero unless the running bar plausibly belongs to this action: GetCastInfo reports
+    // whatever the caster is casting NOW, so an off-GCD woven into a long cast reads the
+    // long cast's remaining time and the instant would be held back by seconds, or dropped
+    // past the scheduler's ceiling. A magnitude test rather than an action-id comparison
+    // because the bar's id and the packet's legitimately differ for an upgraded spell.
     public float CastRemaining
     {
         get

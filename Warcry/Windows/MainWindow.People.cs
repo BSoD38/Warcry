@@ -4,20 +4,16 @@ using Warcry.Game;
 
 namespace Warcry.Windows;
 
-/// <summary>The People tab: whose actions you hear, and how much of them.</summary>
-/// <remarks>
-/// <para>Ordered by the question being asked: who, then which of them by name, then how
-/// loud and how often. The noise controls sit under the audience they exist to bound
-/// rather than on the Settings tab, because every one of them is meaningless until
-/// somebody other than you can be heard.</para>
-/// <para>Labels talk about people, not about buckets, tiers or filters. The implementation
-/// vocabulary stays in tooltips, exactly as it does on Settings.</para>
-/// </remarks>
+// The People tab: whose actions you hear, and how much of them. Ordered by the question
+// being asked — who, then which of them by name, then how loud and how often. The noise
+// controls sit here rather than on Settings because every one of them is meaningless until
+// somebody other than you can be heard.
+// Labels talk about people, not buckets, tiers or filters; the implementation vocabulary
+// stays in tooltips.
 public sealed partial class MainWindow
 {
-    // One buffer per row. Sharing a single field made typing into the "block someone" box
-    // echo into the "name someone" box above it, because ImGui widgets are distinct by ID
-    // but the string behind them was not.
+    // One buffer per row: ImGui widgets are distinct by ID, but a shared string behind them
+    // is not, so typing into one box echoes into the other.
     private string newNamedName = string.Empty;
     private string newBlockedName = string.Empty;
 
@@ -68,7 +64,7 @@ public sealed partial class MainWindow
         }
 
         // Same shape as the Settings tab's Section: more space above a heading than below,
-        // so a long page reads as groups rather than one list.
+        // so a long page reads as groups.
         static void PeopleSection(string title)
         {
             ImGui.Spacing();
@@ -104,14 +100,9 @@ public sealed partial class MainWindow
         _ => string.Empty,
     };
 
-    /// <summary>
-    /// What the crowd machinery is doing right now.
-    /// </summary>
-    /// <remarks>
-    /// Live numbers rather than a description of the algorithm. "Stranger lines are on a
-    /// 9 s gap because there are 18 people around you" is something a user can act on;
-    /// "crowd scaling enabled" is not.
-    /// </remarks>
+    // Live numbers rather than a description of the algorithm: "stranger lines are on a 9 s
+    // gap because there are 18 people around you" is actionable, "crowd scaling enabled" is
+    // not.
     private void DrawCrowdReadout()
     {
         var crowd = this.plugin.Crowd;
@@ -228,15 +219,10 @@ public sealed partial class MainWindow
         }
     }
 
-    /// <summary>
-    /// The three ways to name someone: type it, take your target, or pick a caster the
-    /// Events tab has already seen.
-    /// </summary>
-    /// <remarks>
-    /// The target button is the one that matters — it is the only route that captures the
-    /// home world, and it needs no spelling. Typing is the fallback for someone who is not
-    /// in the zone right now, and matches on any world for that reason.
-    /// </remarks>
+    // Three ways to name someone: type it, take your target, or pick a caster the Events tab
+    // has seen. The target button is the only route that captures the home world and needs
+    // no spelling; typing is the fallback for someone not in the zone, and matches on any
+    // world for that reason.
     private void DrawAddPersonRow(Gating.AudienceFilter filter, bool blocked)
     {
         ImGui.PushID(blocked ? "##addblocked" : "##addnamed");
@@ -268,15 +254,9 @@ public sealed partial class MainWindow
         }
     }
 
-    /// <summary>
-    /// Names the hook has actually seen cast something, newest first.
-    /// </summary>
-    /// <remarks>
-    /// Worth its own control because it is the only route that cannot be misspelled for
-    /// someone who is no longer targetable — you heard them a minute ago, they are in the
-    /// list. No world, though: the event ring keeps the name, not the world, so these
-    /// match on any world.
-    /// </remarks>
+    // Names the hook has seen cast something, newest first: the only route that cannot be
+    // misspelled for someone no longer targetable. The event ring keeps the name and not the
+    // world, so these match on any world.
     private void DrawRecentCasterPicker(System.Action<NamedPlayer> add)
     {
         if (!ImGui.BeginCombo("##recent", "From a recent event", ImGuiComboFlags.HeightLarge))
@@ -303,16 +283,9 @@ public sealed partial class MainWindow
         ImGui.EndCombo();
     }
 
-    /// <summary>
-    /// Points out profiles aimed at someone who can never be heard.
-    /// </summary>
-    /// <remarks>
-    /// The two lists answer different questions — this one decides who is heard, a
-    /// profile's decides which clips they get — and the failure mode of that split is
-    /// silent: you build a pack for a friend, aim a profile at them, and nothing happens
-    /// because they were never admitted. Cheap to detect, so it is never left to be
-    /// discovered.
-    /// </remarks>
+    // Points out profiles aimed at someone who can never be heard. The two lists answer
+    // different questions — this one decides who is heard, a profile's decides which clips
+    // they get — and the failure mode of that split is silence.
     private void DrawProfileNameWarning(Gating.AudienceFilter filter)
     {
         List<NamedPlayer>? missing = null;
@@ -386,14 +359,12 @@ public sealed partial class MainWindow
         ImGui.TextDisabled("  Minimum gap between one person's lines");
 
         // Your own gap lives on Settings, beside the rest of the settings about your own
-        // lines, and is deliberately NOT repeated as a second slider here: two controls for
-        // one value only ever leaves a reader hunting for the difference between them.
+        // lines, and is deliberately not repeated here.
         ImGui.TextDisabled(cfg.SelfCooldownSeconds <= 0f
             ? "    Me: off — set under \"When lines play\" on the Settings tab."
             : $"    Me: {cfg.SelfCooldownSeconds:0.0}s — set under \"When lines play\" on the Settings tab.");
 
-        // NOTE: a property cannot be passed by ref, so each gap is read, edited, written
-        // back — the same shape the Settings tab uses for its toggles.
+        // A property cannot be passed by ref, so each gap is read, edited, written back.
         cfg.NamedCooldownSeconds = Gap("People I named", cfg.NamedCooldownSeconds, ref dirty);
         cfg.PartyCooldownSeconds = Gap("Party, alliance and friends", cfg.PartyCooldownSeconds, ref dirty);
         cfg.OtherCooldownSeconds = Gap("Everyone else", cfg.OtherCooldownSeconds, ref dirty);

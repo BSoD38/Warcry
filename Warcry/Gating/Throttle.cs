@@ -7,24 +7,12 @@ using Warcry.Profiles;
 
 namespace Warcry.Gating;
 
-/// <summary>
-/// Admission control: how often a voiceline is allowed through.
-/// </summary>
-/// <remarks>
-/// <para>The plan's five stages (docs/PLAN.md 5.7): 0 content filter, 2 per-caster
-/// cooldown, 3 crowd scaling, 4 global token bucket, 5 concurrency — which lives in the
-/// sink. Stage 1 (dedupe) is still unnecessary while <c>ActionEffectHandler.Receive</c> is
-/// the only trigger source.</para>
-/// <para>Stages 3 and 4 exist because of remote casters and only ever apply to them. Your
-/// own lines are scaled by no crowd and spend no tokens: the point of the whole mechanism
-/// is that a busy zone quietens the strangers around you, and it would be self-defeating
-/// if it silenced you at the same time.</para>
-/// <para>Cooldowns and tokens are stamped only when a clip actually gets scheduled, not
-/// when the event is admitted, so an unmapped action does not consume anyone's window.</para>
-/// </remarks>
+// Admission control, docs/PLAN.md 5.7. Crowd scaling and the token bucket never apply to
+// your own lines — the mechanism exists to quieten the strangers around you.
+// Cooldowns and tokens are stamped in Mark, once a clip is actually scheduled, so an
+// unmapped action consumes nobody's window.
 public sealed class Throttle
 {
-    /// <summary>ActionCategory 1 — source-confirmed as auto-attack.</summary>
     private const ushort AutoAttackCategory = 1;
 
     private const int MaxTrackedCasters = 256;
@@ -46,10 +34,8 @@ public sealed class Throttle
         this.tokensStampedAt = Stopwatch.GetTimestamp();
     }
 
-    /// <summary>
-    /// Whole lines of burst currently available, for the UI. Deliberately does not refill:
-    /// a readout must not advance the state the cast path is metering itself against.
-    /// </summary>
+    // Deliberately does not refill: a readout must not advance the state the cast path is
+    // metering itself against.
     public int TokensAvailable
     {
         get
@@ -62,7 +48,6 @@ public sealed class Throttle
 
     public bool Admit(in CastEvent ev, in ActionKey action, AudienceBucket primary, out DropStage stage)
     {
-        // ---- stage 0: content filters, free ----
         if (this.config.SkipAutoAttacks && action.Category == AutoAttackCategory)
         {
             stage = DropStage.Throttle;
@@ -81,7 +66,6 @@ public sealed class Throttle
             return false;
         }
 
-        // ---- stages 2 and 3: per-caster cooldown, stretched by the crowd ----
         var cooldown = this.CooldownFor(primary);
         if (cooldown > 0f && this.lastPlayTicks.TryGetValue(ev.CasterEntityId, out var last))
         {
@@ -93,9 +77,8 @@ public sealed class Throttle
             }
         }
 
-        // ---- stage 4: global token bucket, everyone but you ----
-        // Peeked, not spent. Spending happens in Mark, so an action with nothing mapped to
-        // it cannot burn the burst that a mapped one was about to use.
+        // Peeked, not spent: an action with nothing mapped to it must not burn the burst a
+        // mapped one was about to use.
         if (this.SpendsTokens(primary) && this.Peek() < 1d)
         {
             stage = DropStage.RateLimited;
@@ -106,22 +89,18 @@ public sealed class Throttle
         return true;
     }
 
-    /// <summary>The cooldown this caster is actually held to, crowd scaling included.</summary>
     public float CooldownFor(AudienceBucket primary)
     {
         var cooldown = this.audience.CooldownFor(primary);
-
-        // Never you. See the type remarks.
         return primary == AudienceBucket.Self ? cooldown : cooldown * this.crowd.CooldownScale;
     }
 
-    /// <summary>Starts the cooldown and spends a token. Call only once a clip is scheduled.</summary>
+    // Call only once a clip is actually scheduled.
     public void Mark(uint casterEntityId, AudienceBucket primary)
     {
-        // Dropping the whole table at the ceiling, exactly as ClipResolver.Remember bounds
-        // its own per-player map: an eviction order maintained on the cast path costs more
-        // than the worst case here, which is one early line per caster, once. Overwriting
-        // an existing caster is always free, so this only trips on a genuinely new one.
+        // Drop the whole table at the ceiling, as ClipResolver.Remember does: maintaining
+        // an eviction order on the cast path costs more than the worst case, which is one
+        // early line per caster, once.
         if (this.lastPlayTicks.Count >= MaxTrackedCasters &&
             !this.lastPlayTicks.ContainsKey(casterEntityId))
         {
@@ -139,14 +118,8 @@ public sealed class Throttle
     private bool SpendsTokens(AudienceBucket primary)
         => this.config.LimitTotalRate && primary != AudienceBucket.Self;
 
-    /// <summary>
-    /// Refills by elapsed time and returns the balance, without spending.
-    /// </summary>
-    /// <remarks>
-    /// Refill is lazy rather than ticked on the framework update: the bucket only matters
-    /// at the moment something asks for it, so there is nothing to do per frame, and a
-    /// long quiet stretch costs exactly one subtraction rather than thousands of adds.
-    /// </remarks>
+    // Refills by elapsed time and returns the balance, without spending. Lazy rather than
+    // ticked per frame: a long quiet stretch costs one add instead of thousands.
     private double Peek()
     {
         var now = Stopwatch.GetTimestamp();

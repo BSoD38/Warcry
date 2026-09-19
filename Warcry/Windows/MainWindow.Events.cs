@@ -3,21 +3,14 @@ using Warcry.Game;
 
 namespace Warcry.Windows;
 
-/// <summary>The Events tab.</summary>
+// The Events tab.
 public sealed partial class MainWindow
 {
     private bool onlyMe;
     private bool hideDropped = true;
 
-    /// <summary>
-    /// Every action the hook saw, with what happened to it: the "why did that not play"
-    /// ledger, and the quickest route to mapping or muting an action you just used.
-    /// </summary>
-    /// <remarks>
-    /// The Result column used to print the raw <c>DropStage</c> name, so a user who wanted
-    /// to know why nothing happened got <c>SinkRefused</c> or <c>TooFarOut</c>. Each cell
-    /// now carries a short answer and a full sentence on hover.
-    /// </remarks>
+    // Every action the hook saw, with what happened to it: the "why did that not play"
+    // ledger, and the quickest route to mapping or muting an action you just used.
     private void DrawEvents()
     {
         var diag = this.plugin.Diag;
@@ -73,8 +66,8 @@ public sealed partial class MainWindow
         ImGui.TableSetupColumn("Map", ImGuiTableColumnFlags.WidthFixed, 62);
         ImGui.TableSetupColumn("Action");
         ImGui.TableSetupColumn("Kind", ImGuiTableColumnFlags.WidthFixed, 92);
-        // Cast time is THE discriminator for the snapshot-vs-visual-completion offset:
-        // only rows with a non-zero cast can fire "early". Instants must never be delayed.
+        // Cast time is the discriminator for the snapshot-vs-visual-completion offset: only
+        // rows with a non-zero cast can fire early. Instants must never be delayed.
         ImGui.TableSetupColumn("Cast bar", ImGuiTableColumnFlags.WidthFixed, 108);
         ImGui.TableSetupColumn("Voice type", ImGuiTableColumnFlags.WidthFixed, 96);
         ImGui.TableSetupColumn("Result", ImGuiTableColumnFlags.WidthFixed, 104);
@@ -112,8 +105,7 @@ public sealed partial class MainWindow
                 ImGui.TextUnformatted(string.IsNullOrEmpty(row.CasterName) ? $"0x{ev.CasterEntityId:X8}" : row.CasterName);
             }
 
-            // What they are to you, and why that was or was not enough. Without this a
-            // stranger's row and a party member's row are indistinguishable, and "not
+            // What they are to you, and why that was or was not enough — otherwise "not
             // listening" gives no clue which switch on the People tab would fix it.
             // Guarded rather than Tip(): this is inside the row loop, and Tip's argument is
             // built whether or not the row is hovered.
@@ -161,8 +153,8 @@ public sealed partial class MainWindow
             var cast = this.CastSecondsOf(ev.ActionId);
             if (ev.WasCasting)
             {
-                // The number that matters: seconds of cast bar left at snapshot.
-                // This is the real, per-event, latency-correct offset.
+                // Seconds of cast bar left at snapshot: the per-event, latency-correct
+                // offset.
                 ImGui.TextUnformatted($"{cast:0.0}s  +{ev.CastRemaining:0.00}");
                 if (ImGui.IsItemHovered())
                 {
@@ -208,9 +200,8 @@ public sealed partial class MainWindow
                 ? "Warcry accepted this one and handed it to the audio output."
                 : DropReason(row.Drop));
 
-            // Mute, from the row where you just heard the thing you did not want.
-            // This is the only way MutedActionIds can be populated at all: before it
-            // existed the config field and the Throttle check were both unreachable.
+            // The only route that populates MutedActionIds: mute from the row where you
+            // just heard the thing you did not want.
             ImGui.TableNextColumn();
             if (ev.ActionId == 0)
             {
@@ -257,10 +248,8 @@ public sealed partial class MainWindow
         }
     }
 
-    /// <summary>
-    /// A two-or-three word answer for the Result column. The full sentence is on hover,
-    /// from <see cref="DropReason"/>.
-    /// </summary>
+    // A two-or-three word answer for the Result column. The full sentence is on hover, from
+    // DropReason.
     private static string DropShort(DropStage stage) => stage switch
     {
         DropStage.PlaybackOff => "playback off",

@@ -7,15 +7,11 @@ using Dalamud.Plugin.Services;
 
 namespace Warcry.Profiles;
 
-/// <summary>
-/// Owns the user's action-to-clip mappings, persisted to profiles.json.
-/// </summary>
-/// <remarks>
-/// Deliberately NOT in IPluginConfiguration: that serialises with
-/// TypeNameHandling.Objects (so renaming a class orphans every user's data) and writes
-/// synchronously through a 64 MB-capped store. This is plain System.Text.Json with its
-/// own schema version, so the mapping table can evolve independently. See docs/PLAN.md 5.8.
-/// </remarks>
+// Owns the user's action-to-clip mappings, persisted to profiles.json.
+// Deliberately NOT in IPluginConfiguration: that serialises with TypeNameHandling.Objects,
+// so renaming a class orphans every user's data, and writes synchronously through a 64 MB
+// capped store. Plain System.Text.Json with its own schema version instead, so the mapping
+// table can evolve independently. See docs/PLAN.md 5.8.
 public sealed class ProfileStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -29,7 +25,7 @@ public sealed class ProfileStore
 
     private ProfileDocument document = new();
 
-    /// <summary>Profiles pre-sorted most-specific first. THIS ORDER IS THE FALLBACK CHAIN.</summary>
+    // Most-specific first. THIS ORDER IS THE FALLBACK CHAIN.
     private VoiceProfile[] sorted = [];
 
     public ProfileStore(string configDirectory, IPluginLog log)
@@ -44,10 +40,8 @@ public sealed class ProfileStore
 
     public IReadOnlyList<VoiceProfile> Sorted => this.sorted;
 
-    /// <summary>
-    /// Bumped on every successful save. The pack builder watches it to know when the
-    /// mapping set changed without holding a reference into the document.
-    /// </summary>
+    // Bumped on every successful save. The pack builder watches it to notice a changed
+    // mapping set without holding a reference into the document.
     public int Revision { get; private set; }
 
     public void Load()
@@ -85,9 +79,8 @@ public sealed class ProfileStore
     {
         try
         {
-            // Sort BEFORE serialising, so the file on disk records the order the resolver
-            // will actually use — a document saved pre-sort and reloaded later would
-            // present rules in a different order than the session that wrote it ran with.
+            // Sort BEFORE serialising, so the file records the order the resolver will
+            // actually use.
             this.Resort();
 
             var json = JsonSerializer.Serialize(this.document, JsonOptions);
@@ -102,11 +95,9 @@ public sealed class ProfileStore
         }
     }
 
-    /// <summary>
-    /// Sorting once here is what makes resolution a simple linear scan: the fallback
-    /// chain (voiceId -> voiceSlot -> tribe -> race -> sex -> wildcard) falls out of the
-    /// order rather than being hand-coded.
-    /// </summary>
+    // Sorting once here is what makes resolution a linear scan: the fallback chain
+    // (voiceId -> voiceSlot -> tribe -> race -> sex -> wildcard) falls out of the order
+    // rather than being hand-coded.
     private void Resort()
     {
         // Load and Save are the only two moments a profile's name list can have changed,
@@ -126,11 +117,10 @@ public sealed class ProfileStore
 
         foreach (var profile in this.document.Profiles)
         {
-            // OrderByDescending, not List.Sort: List.Sort is an unstable introsort, and
-            // most rules tie on specificity (each names one action). An unstable sort
-            // permutes the ties on every save, and the resolver takes the FIRST matching
-            // rule — so which clip wins could change because of an unrelated edit. A
-            // stable sort keeps insertion order within a tie, forever.
+            // OrderByDescending, not List.Sort: List.Sort is an unstable introsort and most
+            // rules tie on specificity, so it would permute the ties on every save. The
+            // resolver takes the FIRST matching rule, so which clip wins would change
+            // because of an unrelated edit.
             var ordered = profile.Rules.OrderByDescending(r => r.When.Specificity).ToList();
             profile.Rules.Clear();
             profile.Rules.AddRange(ordered);
@@ -150,12 +140,9 @@ public sealed class ProfileStore
         this.Save();
     }
 
-    /// <summary>
-    /// The profile new mappings land in when the user has not set any up. Matches
-    /// everything, so the common case — one person, one character — needs no thought
-    /// about profiles at all. The match fields are for alts and for aiming a set at
-    /// someone else.
-    /// </summary>
+    // Where new mappings land when the user has not set any profile up. Matches everything,
+    // so the common case — one person, one character — needs no thought about profiles. The
+    // match fields are for alts and for aiming a set at someone else.
     public VoiceProfile GetOrCreateDefault()
     {
         var existing = this.document.Profiles.FirstOrDefault();
@@ -173,12 +160,10 @@ public sealed class ProfileStore
         return this.Add(profile);
     }
 
-    /// <summary>Assigns a clip to an action, reusing an existing rule for that action if there is one.</summary>
-    /// <param name="family">
-    /// Every id that resolves to this action — the action itself plus anything that
-    /// upgrades into it. Mapping a bare id breaks under level sync.
-    /// </param>
-    /// <param name="englishName">Language-independent identity; catches duplicate and variant rows.</param>
+    // Reuses an existing rule for the action if there is one. family is every id that
+    // resolves to this action, the action itself plus anything that upgrades into it,
+    // because a bare id breaks under level sync; englishName is the language-independent
+    // identity, which catches duplicate and variant rows.
     public void MapClipToAction(
         VoiceProfile profile,
         uint actionId,

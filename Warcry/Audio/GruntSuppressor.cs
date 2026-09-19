@@ -10,60 +10,46 @@ using Warcry.Game;
 
 namespace Warcry.Audio;
 
-/// <summary>
-/// Silences the game's own battle grunt so it does not double up with ours.
-/// </summary>
-/// <remarks>
-/// <para>The mirror image of <see cref="NativeVoiceSink"/>: both talk to
-/// <c>SoundManager</c>, one to start a voice and this one to stop one. It lives in
-/// <c>Audio</c> for that reason rather than in <c>Native</c>, which owns the SCD and
-/// Penumbra layer.</para>
-/// <para><b>Only the attack banks.</b> A <c>Vo_Battle</c> container holds five sound
-/// groups and <c>soundNumber</c> picks one: 0 and 3 are attack, <b>1 is damage taken and
-/// 2 is death</b> (parsed from a real file and confirmed by ear — see
-/// <c>docs/native-spike.md</c>). Out-of-range values 4-7 fall back to the attack bank. So
-/// the filter is "not 1 and not 2", and a suppressed character still grunts when hurt and
-/// killed. <c>ScdForge</c> honours the same split when it retargets audio indices.</para>
-/// <para><b>The window opens at snapshot, not at playback.</b> The grunt is driven by the
-/// action's animation timeline, not the effect packet: measured at 5-1071 ms after
-/// snapshot, fixed per action. It can therefore land well before our own line, which is
-/// held back by the cast bar. Arming any later would miss the fast half of that range.</para>
-/// <para><b>Suppression is by gain, never by refusal.</b> <c>Original</c> is always called;
-/// only the volume argument is zeroed. The game passes <c>autoRelease: false</c> for its own
-/// grunt, so its caller retains the <c>SoundData*</c> — returning null would change engine
-/// bookkeeping the game depends on, and the same pool slot is consumed either way.</para>
-/// <para><b>Unverified in game.</b> That <c>volume: 0f</c> fully silences the call is the one
-/// link in the chain a green build cannot establish. If a fragment still leaks, the lever to
-/// try next is <c>SoundVolumeCategory.NoPlay</c> (= 5). See docs/PLAN.md 5.6.</para>
-/// </remarks>
+// Silences the game's own battle grunt so it does not double up with ours. The mirror image
+// of NativeVoiceSink — both talk to SoundManager, one to start a voice and this to stop one
+// — which is why it lives in Audio rather than Native.
+//
+// Only the attack banks. A Vo_Battle container holds five sound groups and soundNumber
+// picks one: 0 and 3 are attack, 1 is damage taken and 2 is death, and out-of-range values
+// 4-7 fall back to the attack bank. So the filter is "not 1 and not 2", and a suppressed
+// character still grunts when hurt and killed. ScdForge honours the same split when it
+// retargets audio indices.
+//
+// The window opens at snapshot, not at playback: the grunt runs off the action's animation
+// timeline rather than the effect packet, landing 5-1071 ms after snapshot, fixed per
+// action. It can therefore land well before our own line, which is held back by the cast
+// bar, so arming any later would miss the fast half of that range.
+//
+// Suppression is by gain, never by refusal. Original is always called and only the volume
+// argument is zeroed: the game passes autoRelease: false for its own grunt, so its caller
+// retains the SoundData*, and returning null would change engine bookkeeping it depends on.
+// The same pool slot is consumed either way.
+//
+// ⚠ Unverified in game: that volume: 0f fully silences the call. If a fragment leaks, the
+// next lever is SoundVolumeCategory.NoPlay (= 5). See docs/PLAN.md 5.6.
 public sealed unsafe class GruntSuppressor : IDisposable
 {
-    /// <summary>Casters that can be inside their window at once.</summary>
-    /// <remarks>
-    /// Far above what the throttle can produce — the cooldown is seconds per caster and the
-    /// global rate cap is a handful per second — so the overwrite path below is a backstop
-    /// rather than a working mode.
-    /// </remarks>
+    // Casters that can be inside their window at once. Far above what the throttle can
+    // produce, so the overwrite path below is a backstop rather than a working mode.
     private const int MaxWindows = 16;
 
-    /// <summary>How close the emitter must be to an armed caster to be counted as theirs.</summary>
-    /// <remarks>
-    /// Positions are refreshed every frame, so the stored one is at most ~16 ms stale — a
-    /// sprinting player moves under a tenth of a yalm in that time. The tolerance is this
-    /// wide only to absorb the difference between the object's position and wherever the
-    /// engine decides to put the emitter.
-    /// </remarks>
+    // How close the emitter must be to an armed caster to count as theirs. Positions are
+    // refreshed every frame, so the stored one is at most ~16 ms stale; the tolerance is
+    // this wide only to absorb the gap between the object's position and wherever the engine
+    // puts the emitter.
     private const float MatchRadiusYalms = 1.5f;
 
     private const int FaultLimit = 10;
 
-    /// <summary>Lower-case ASCII, matched case-insensitively against the raw path bytes.</summary>
-    /// <remarks>
-    /// Real paths look like <c>sound/voice/Vo_Battle/Vo_Battle_PC_ros_Ma_fr.scd</c> — one
-    /// file per race, gender and language, so nothing narrower than this substring would
-    /// cover them all. Our own <c>sound/vfx/warcry/clip/*.scd</c> never matches, which is
-    /// what keeps this hook off the native sink's back.
-    /// </remarks>
+    // Lower-case ASCII, matched case-insensitively against the raw path bytes. Real paths
+    // look like sound/voice/Vo_Battle/Vo_Battle_PC_ros_Ma_fr.scd — one file per race, gender
+    // and language — so nothing narrower covers them all. Our own
+    // sound/vfx/warcry/clip/*.scd never matches, which keeps this hook off the native sink.
     private static readonly byte[] BattleVoiceMarker = "vo_battle"u8.ToArray();
 
     private readonly Hook<SoundManager.Delegates.PlaySound>? hook;
@@ -107,13 +93,10 @@ public sealed unsafe class GruntSuppressor : IDisposable
         }
     }
 
-    /// <summary>One caster whose grunt is currently unwanted.</summary>
-    /// <remarks>
-    /// Written on the framework thread and read from the detour. Every field is a value
-    /// with no pointer in it, so if <c>PlaySound</c> ever turns out to be called off-thread
-    /// the worst a torn read can produce is one mis-measured distance — a grunt kept that
-    /// should have gone, or the reverse — never a fault.
-    /// </remarks>
+    // One caster whose grunt is currently unwanted. Written on the framework thread and read
+    // from the detour; every field is a value with no pointer in it, so if PlaySound is ever
+    // called off-thread the worst a torn read produces is one mis-measured distance, never a
+    // fault.
     private struct Window
     {
         public uint EntityId;
@@ -123,31 +106,25 @@ public sealed unsafe class GruntSuppressor : IDisposable
 
     public nint HookAddress { get; }
 
-    /// <summary>Whether the hook resolved. False means the feature cannot run at all.</summary>
+    // False means the feature cannot run at all.
     public bool Installed => this.hook is not null;
 
-    /// <summary>Whether the detour is currently live.</summary>
     public bool Active => this.active;
 
-    /// <summary>Disabled after repeated faults, until the plugin is reloaded.</summary>
+    // Disabled after repeated faults, until the plugin is reloaded.
     public bool Tripped => this.tripped;
 
-    /// <summary>Grunts silenced this session.</summary>
     public long Suppressed { get; private set; }
 
     public string LastPath { get; private set; } = string.Empty;
 
     public uint LastSoundNumber { get; private set; }
 
-    /// <summary>
-    /// Distance from the emitter to the matched caster, or -1 under
-    /// <see cref="GruntMode.Always"/>, which attributes nothing.
-    /// </summary>
+    // -1 under GruntMode.Always, which attributes nothing.
     public float LastMatchDistance { get; private set; }
 
     public DateTime LastAt { get; private set; }
 
-    /// <summary>Casters currently inside their window.</summary>
     public int ArmedCount
     {
         get
@@ -166,14 +143,8 @@ public sealed unsafe class GruntSuppressor : IDisposable
         }
     }
 
-    /// <summary>
-    /// Opens the suppression window for a caster whose line is about to play.
-    /// </summary>
-    /// <remarks>
-    /// Called from inside the ActionEffect detour, so it allocates nothing and never
-    /// touches the object table — the position comes from the event, and
-    /// <see cref="Update"/> keeps it current from there.
-    /// </remarks>
+    // Called from inside the ActionEffect detour, so it allocates nothing and never touches
+    // the object table: the position comes from the event, and Update keeps it current.
     public void Arm(uint casterEntityId, Vector3 position)
     {
         if (casterEntityId == 0 || this.tripped || this.hook is null || this.config.Grunts != GruntMode.WhenVoiced)
@@ -224,10 +195,8 @@ public sealed unsafe class GruntSuppressor : IDisposable
         };
     }
 
-    /// <summary>
-    /// Follows the hook to the config, keeps armed positions current and retires expired
-    /// windows. Framework thread only — it reads the object table.
-    /// </summary>
+    // Follows the hook to the config, keeps armed positions current and retires expired
+    // windows. Framework thread only — it reads the object table.
     public void Update()
     {
         // Enabled is advertised as "nothing at all, no work done in the background", and a
@@ -263,7 +232,7 @@ public sealed unsafe class GruntSuppressor : IDisposable
         }
     }
 
-    /// <summary>Forgets every window. Used when the world changes underneath them.</summary>
+    // For when the world changes underneath them.
     public void Clear() => Array.Clear(this.windows);
 
     public void Dispose()
@@ -350,7 +319,7 @@ public sealed unsafe class GruntSuppressor : IDisposable
             isPositional, a18);
 
         // Redundant if the zeroed argument did its job, and the only thing that works if it
-        // did not. Both writes are cheap; guessing which one is needed is not.
+        // did not. Both writes are cheap.
         if (suppress && result != null)
         {
             result->Volume = 0f;
@@ -397,7 +366,7 @@ public sealed unsafe class GruntSuppressor : IDisposable
             return false;
         }
 
-        // Rare enough to afford the string. A suppression the user cannot see is
+        // Rare enough to afford the string, and a suppression the user cannot see is
         // indistinguishable from the plugin breaking their game audio.
         this.Suppressed++;
         this.LastPath = path.ToString();

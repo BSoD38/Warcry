@@ -4,25 +4,18 @@ using NAudio.Wave.SampleProviders;
 
 namespace Warcry.Clips;
 
-/// <summary>How a pitch offset is applied.</summary>
 public enum PitchMode : byte
 {
-    /// <summary>
-    /// Tape speed: pitch and duration move together. Cheap, no artifacts beyond
-    /// interpolation error, and usually the better choice for a voice — a physically
-    /// larger or smaller person really does shift formants along with pitch.
-    /// </summary>
+    // Tape speed: pitch and duration move together. Cheap, and usually the better choice
+    // for a voice — a larger or smaller person really does shift formants along with pitch.
     Varispeed = 0,
 
-    /// <summary>
-    /// Phase vocoder: pitch changes, duration is preserved. Costs CPU and introduces
-    /// phasiness and transient smearing that no amount of filtering removes — those are
-    /// structural to the algorithm. Raise <c>fftSize</c> to trade CPU for quality.
-    /// </summary>
+    // Phase vocoder: duration preserved. Costs CPU, and the phasiness and transient
+    // smearing are structural to the algorithm. Raise fftSize to trade CPU for quality.
     PreserveDuration = 1,
 }
 
-/// <summary>Decoded mono 44.1 kHz float PCM, shared and immutable.</summary>
+// Decoded mono 44.1 kHz float PCM, shared and immutable.
 public sealed class CachedClip
 {
     public CachedClip(ClipInfo info, float[] samples)
@@ -33,17 +26,11 @@ public sealed class CachedClip
 
     public ClipInfo Info { get; }
 
-    /// <summary>Never mutated after construction — many providers read it concurrently.</summary>
+    // Never mutated after construction — many providers read it concurrently.
     public float[] Samples { get; }
 
-    /// <summary>
-    /// A fresh reader over the shared buffer. One per playback, never reused.
-    /// </summary>
-    /// <param name="rate">
-    /// Playback rate. 1 = unchanged, 2 = an octave up and half as long, 0.5 = an octave
-    /// down and twice as long. This is varispeed — pitch and duration move together,
-    /// like tape speed — rather than a formant-preserving shift.
-    /// </param>
+    // One reader per playback, never reused. rate is varispeed: 2 = an octave up and half
+    // as long, 0.5 = an octave down and twice as long.
     public ISampleProvider CreateProvider(float rate = 1f, PitchMode mode = PitchMode.Varispeed, int fftSize = 2048)
     {
         if (mode == PitchMode.Varispeed || Math.Abs(rate - 1f) < 0.001f)
@@ -51,25 +38,17 @@ public sealed class CachedClip
             return new Reader(this.Samples, rate);
         }
 
-        // Read at natural speed, then shift pitch without touching duration.
-        // osamp 8 is Bernsee's recommended overlap for speech-like material; lower
-        // values are noticeably grainier.
+        // osamp 8 is Bernsee's recommended overlap for speech-like material; lower values
+        // are noticeably grainier.
         return new SmbPitchShiftingSampleProvider(
             new Reader(this.Samples, 1f), fftSize, 8, rate);
     }
 
-    /// <summary>Semitones to a playback rate. 12 semitones = one octave = 2x.</summary>
     public static float SemitonesToRate(float semitones) => MathF.Pow(2f, semitones / 12f);
 
-    /// <summary>
-    /// Snaps a playback rate to the nearest half-semitone step.
-    /// </summary>
-    /// <remarks>
-    /// Exists for pitch that must be baked into an encoded variant: a continuous random
-    /// rate would mint a new variant on every roll and make the variant set unbounded,
-    /// while half-semitone steps cap a ±12 st spread at 49 renderings and are below the
-    /// just-noticeable difference for this material.
-    /// </remarks>
+    // For pitch baked into an encoded variant: a continuous random rate would mint a new
+    // variant per roll and make the set unbounded, while half-semitone steps cap a ±12 st
+    // spread at 49 renderings and sit below the just-noticeable difference here.
     public static float QuantiseRate(float rate, float stepSemitones = 0.5f)
     {
         if (rate <= 0f || stepSemitones <= 0f)
@@ -98,7 +77,6 @@ public sealed class CachedClip
 
         public int Read(float[] buffer, int offset, int count)
         {
-            // Fast path: no resampling at all when the rate is effectively 1.
             if (Math.Abs(this.rate - 1.0) < 1e-6)
             {
                 var whole = (int)this.position;
@@ -125,10 +103,9 @@ public sealed class CachedClip
                     break;
                 }
 
-                // Catmull-Rom rather than linear. Linear interpolation is a poor
-                // reconstruction filter and is the dominant source of the harshness you
-                // hear when pitching up; cubic costs three extra multiplies and removes
-                // most of it. Neighbours are clamped at the buffer edges.
+                // Catmull-Rom rather than linear: linear interpolation is a poor
+                // reconstruction filter and is the dominant source of the harshness when
+                // pitching up. Neighbours are clamped at the buffer edges.
                 var t = (float)(this.position - i);
                 var p0 = this.samples[i > 0 ? i - 1 : 0];
                 var p1 = this.samples[i];

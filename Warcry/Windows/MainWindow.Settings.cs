@@ -5,17 +5,11 @@ using Warcry.Audio;
 
 namespace Warcry.Windows;
 
-/// <summary>The Settings tab.</summary>
-/// <remarks>
-/// <para>Grouped by the question a user is actually asking — how loud, when does it play,
-/// where does it stay quiet — rather than by which subsystem owns the field. Anything that
-/// only reports what happened lives on the Status tab instead; this tab is controls only.
-/// The drop-count table used to sit at the bottom here, which made the longest page in the
-/// plugin end in something nobody could act on.</para>
-/// <para>Labels name what the setting does to the sound. The implementation vocabulary —
-/// sink, mixer, forge, variant — stays in tooltips and on Status, because a player deciding
-/// how loud their voicelines are should not have to learn any of it.</para>
-/// </remarks>
+// The Settings tab. Grouped by the question a user is asking — how loud, when does it play,
+// where does it stay quiet — rather than by which subsystem owns the field. Controls only;
+// anything that reports what happened lives on Status.
+// Labels name what the setting does to the sound. The implementation vocabulary — sink,
+// mixer, forge, variant — stays in tooltips and on Status.
 public sealed partial class MainWindow
 {
     private void DrawSettings()
@@ -109,10 +103,8 @@ public sealed partial class MainWindow
 
         Section("Where lines stay quiet");
 
-        // Evaluate live. Gates.Reason is only written when a cast is processed, so reading
-        // the cached value showed the reason from the last action you used rather than the
-        // state you are in now — which reads as a bug when you walk into a cutscene and the
-        // line still says "not suppressed".
+        // Evaluate live: Gates.Reason is only written when a cast is processed, so the
+        // cached value describes the last action you used, not the state you are in now.
         this.plugin.Gates.IsSuppressed();
 
         var suppressed = this.plugin.Gates.Reason;
@@ -127,7 +119,7 @@ public sealed partial class MainWindow
 
         ImGui.Spacing();
 
-        // NOTE: a property cannot be passed by ref, hence the return-the-value shape.
+        // A property cannot be passed by ref, hence the return-the-value shape.
         cfg.DisableInCutscenes = Toggle("Cutscenes", cfg.DisableInCutscenes, ref dirty,
             "Battle cries over dialogue is the worst thing this plugin can do, so this is\n" +
             "on by default.");
@@ -186,8 +178,7 @@ public sealed partial class MainWindow
         {
             ImGui.TextDisabled($"  {cfg.MutedActionIds.Count} action(s) never play, whatever is mapped to them.");
 
-            // Individually removable. Previously the only control was "Unmute all", so one
-            // mis-click meant redoing the whole list.
+            // Individually removable, so one mis-click does not mean redoing the whole list.
             uint? unmute = null;
             foreach (var id in cfg.MutedActionIds.OrderBy(x => x))
             {
@@ -218,8 +209,7 @@ public sealed partial class MainWindow
             cfg.Save();
         }
 
-        // More space above a heading than below it, so a long page still reads as groups
-        // rather than one list.
+        // More space above a heading than below it, so a long page reads as groups.
         static void Section(string title)
         {
             ImGui.Spacing();
@@ -245,15 +235,8 @@ public sealed partial class MainWindow
         }
     }
 
-    /// <summary>
-    /// Where the sound comes out, in terms of what it costs the listener rather than which
-    /// library is involved.
-    /// </summary>
-    /// <remarks>
-    /// The labels used to read "NAudio only" and "Game engine, NAudio fallback". NAudio is
-    /// a NuGet package; naming it in a player-facing combo asks the player to care which
-    /// code path they are on in order to pick one.
-    /// </remarks>
+    // Where the sound comes out, phrased as what it costs the listener rather than which
+    // library is involved: a player picking a mode should not have to know what NAudio is.
     private static readonly (SinkMode Mode, string Label, string Blurb)[] SinkModes =
     [
         (SinkMode.Auto, "Game engine, with backup",
@@ -276,20 +259,9 @@ public sealed partial class MainWindow
          "No sound on your actions. Previewing a clip from the Clips tab still works."),
     ];
 
-    /// <summary>
-    /// The sound-output choice, with the honest caveats attached to it rather than buried
-    /// in a document.
-    /// </summary>
-    /// <summary>
-    /// One labelled combo over a mode table, with a blurb on hover and an optional reason
-    /// a mode is unpickable right now.
-    /// </summary>
-    /// <remarks>
-    /// Shared by all three mode settings on this tab. Each used to carry its own copy of
-    /// "scan for the current label, BeginCombo, Selectable per mode, tooltip, EndCombo",
-    /// which is the part none of them differ in — what differs is the table and the
-    /// consequence line each draws underneath.
-    /// </remarks>
+    // One labelled combo over a mode table, with a blurb on hover and an optional reason a
+    // mode is unpickable right now. Shared by all three mode settings on this tab, which
+    // differ only in the table and the consequence line each draws underneath.
     private static void ModeCombo<T>(
         string label,
         (T Mode, string Label, string Blurb)[] modes,
@@ -420,10 +392,7 @@ public sealed partial class MainWindow
          "mapped and no clips loaded."),
     ];
 
-    /// <summary>
-    /// How much of the game's own battle voice to take away. Off by default, because an
-    /// update that changes what the game sounds like unasked is a nasty surprise.
-    /// </summary>
+    // How much of the game's own battle voice to take away.
     private void DrawGruntSetting(Configuration cfg, ref bool dirty)
     {
         if (!this.plugin.Grunts.Installed)
@@ -456,18 +425,15 @@ public sealed partial class MainWindow
             : "  Grunts for taking damage and dying are never touched.");
     }
 
-    /// <summary>
-    /// Where a line sounds from. Follow is the default because the alternative is a line
-    /// that fades out mid-word whenever a skill moves you.
-    /// </summary>
+    // Where a line sounds from. Follow is the default because the alternative is a line that
+    // fades out mid-word whenever a skill moves you.
     private void DrawVoicePositionSetting(Configuration cfg, ref bool dirty)
     {
         var position = cfg.VoicePosition;
         ModeCombo("Line follows you", VoicePositions, ref position, ref dirty);
         cfg.VoicePosition = position;
 
-        // Said here rather than left for the user to discover: the built-in player has no
-        // positional model at all, so it cannot honour any of these.
+        // The built-in player has no positional model, so it cannot honour any of these.
         ImGui.TextDisabled(cfg.Sink switch
         {
             SinkMode.ManagedOnly => "  The built-in player ignores this. It has no positioning at all.",

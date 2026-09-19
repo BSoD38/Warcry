@@ -7,61 +7,44 @@ using Warcry.Clips;
 
 namespace Warcry.Native;
 
-/// <summary>One clip, encoded and reachable by the game's resource system.</summary>
+// One clip, encoded and reachable by the game's resource system.
 public sealed class ForgedClip
 {
     public required string VariantKey { get; init; }
 
-    /// <summary>The game-relative path the engine must be asked for.</summary>
+    // The game-relative path the engine must be asked for.
     public required string GamePath { get; init; }
 
     public required string LocalPath { get; init; }
 
     public required float Seconds { get; init; }
 
-    /// <summary>Container size on disk — and in client memory once warmed.</summary>
+    // On disk, and in client memory once warmed.
     public required int Bytes { get; init; }
 
-    /// <summary>
-    /// When the engine was first asked for this path, or 0 if it has not been.
-    /// </summary>
-    /// <remarks>
-    /// Resource loading is asynchronous: the first request for a path returns before the
-    /// bytes are in memory and produces nothing audible. The warm-up is issued the moment
-    /// the clip is registered rather than being charged to a real play, so by the time a
-    /// line actually needs it — at least a throttle cooldown later — it is loaded.
-    /// </remarks>
+    // When the engine was first asked for this path, or 0 if it has not been. Resource
+    // loading is asynchronous: the first request for a path returns before the bytes are in
+    // memory and produces nothing audible, so the warm-up is issued at registration rather
+    // than charged to a real play.
     public long WarmedAt { get; set; }
 }
 
-/// <summary>
-/// Turns a decoded clip into an <c>.scd</c> the game's own engine will play, and keeps the
-/// Penumbra redirects that make it reachable.
-/// </summary>
-/// <remarks>
-/// <para>The route, proven end to end in <c>docs/native-spike.md</c>: clone a real
-/// battle-voice container from the user's own install, encode the clip as mono MS-ADPCM
-/// (the only format the engine both plays and we can write — a survey of the game's own
-/// SCDs found 267 MS-ADPCM entries, 92 HCA and no PCM at all), append it past the end of
-/// the container and point every audio index at it, then serve it from a content-addressed
-/// synthetic path.</para>
-/// <para><b>Nothing is shipped.</b> The container template is read from the player's own
-/// game files at runtime, which also means it always matches their client version.</para>
-/// </remarks>
+// Turns a decoded clip into an .scd the game's own engine will play, and keeps the Penumbra
+// redirects that make it reachable: clone a real battle-voice container from the user's own
+// install, encode the clip as mono MS-ADPCM, append it past the end of the container and
+// point every audio index at it, then serve it from a content-addressed synthetic path.
+// See docs/native-spike.md.
+// Nothing is shipped — the template comes from the player's own game files at runtime, so it
+// always matches their client version.
 public sealed class ScdForge
 {
-    /// <summary>
-    /// Ceiling on distinct encoded variants held at once.
-    /// </summary>
-    /// <remarks>
-    /// A resource handle is cached by path for the life of the game process and cannot be
-    /// evicted from our side, so every variant forged is memory the client holds until it
-    /// exits. A profile with a few dozen mappings sits far under this; the cap exists so a
-    /// runaway cannot quietly consume the session.
-    /// </remarks>
+    // A resource handle is cached by path for the life of the game process and cannot be
+    // evicted from our side, so every variant forged is memory the client holds until it
+    // exits. A profile with a few dozen mappings sits far under this; the cap is there so a
+    // runaway cannot quietly consume the session.
     public const int MaxVariants = 192;
 
-    /// <summary>Refuse to encode anything longer than this. A voiceline is not a song.</summary>
+    // A voiceline is not a song.
     private const float MaxSeconds = 30f;
 
     private static readonly string[] TemplateCandidates =
@@ -78,50 +61,39 @@ public sealed class ScdForge
     private readonly PenumbraBridge penumbra;
     private readonly string cacheDir;
 
-    /// <summary>
-    /// Guards <see cref="byVariant"/>, <see cref="inFlight"/> and <see cref="failed"/>
-    /// across threads.
-    /// </summary>
+    // Guards byVariant, inFlight and failed across threads.
     private readonly object gate = new();
 
     private readonly Dictionary<string, ForgedClip> byVariant = [];
     private readonly HashSet<string> inFlight = [];
 
-    /// <summary>
-    /// Variants that cannot be encoded, and why. Guarded by <see cref="gate"/>.
-    /// </summary>
-    /// <remarks>
-    /// A terminal failure has to be remembered. Without this a clip that decodes to nothing
-    /// — or is too long to encode — left no trace in either <see cref="byVariant"/> or
-    /// <see cref="inFlight"/>, so every later cast spawned another encode, drained the whole
-    /// provider again, and logged the same warning forever. Cleared by <see cref="Clear"/>,
-    /// so re-importing the clip is a real retry.
-    /// </remarks>
+    // Variants that cannot be encoded, and why; guarded by gate. A terminal failure leaves
+    // no trace in byVariant or inFlight, so without this every later cast would spawn
+    // another encode and drain the whole provider again. Cleared by Clear, which makes
+    // re-importing the clip a real retry.
     private readonly Dictionary<string, string> failed = [];
     private readonly System.Collections.Concurrent.ConcurrentQueue<Encoded> completed = new();
 
-    /// <summary>Main-thread only: Penumbra IPC and the redirect set are not shared.</summary>
+    // Main-thread only: Penumbra IPC and the redirect set are not shared.
     private readonly Dictionary<string, string> redirects = [];
 
-    /// <summary>Encodes drained this pump, held until registration succeeds.</summary>
+    // Encodes drained this pump, held until registration succeeds.
     private readonly List<Encoded> pendingRegistration = [];
 
     private ScdWriter.Template? template;
 
-    /// <summary>
-    /// Latched when no template candidate could be loaded, so the failure is answered from
-    /// memory instead of re-reading five sqpack files on every call — Initialise is reached
-    /// once per cast and once per frame from the Settings tab.
-    /// </summary>
+    // Latched when no template candidate could be loaded, so the failure is answered from
+    // memory instead of re-reading five sqpack files on every call. Initialise is reached
+    // once per cast and once per frame from the Settings tab.
     private bool templateLoadFailed;
 
-    /// <summary>Set on unload so in-flight encodes stop touching Dalamud services and disk.</summary>
+    // Set on unload so in-flight encodes stop touching Dalamud services and disk.
     private volatile bool shutDown;
 
     private int lastStatusReady = -1;
     private int lastStatusPending = -1;
 
-    /// <summary>An encode that finished off-thread, waiting to be registered.</summary>
+    // An encode that finished off-thread, waiting to be registered.
     private sealed record Encoded(string VariantKey, string GamePath, string LocalPath, float Seconds, int Bytes);
 
     public ScdForge(IDataManager data, IPluginLog log, PenumbraBridge penumbra, string configDirectory)
@@ -154,7 +126,7 @@ public sealed class ScdForge
         }
     }
 
-    /// <summary>Plain-English reason the forge is or is not usable.</summary>
+    // Plain-English reason the forge is or is not usable.
     public string Status { get; private set; } = "not initialised";
 
     public bool Ready { get; private set; }
@@ -170,12 +142,11 @@ public sealed class ScdForge
         }
     }
 
-    /// <summary>Which game file the container is cloned from, for the Status tab.</summary>
+    // Which game file the container is cloned from, for the Status tab.
     public string TemplatePath { get; private set; } = string.Empty;
 
-    /// <summary>Disk bytes across every registered container, and the warmed subset.</summary>
-    /// <remarks>Warmed bytes approximate resident client memory: a warmed resource handle
-    /// holds the whole container and cannot be evicted until the game exits.</remarks>
+    // Warmed bytes approximate resident client memory: a warmed resource handle holds the
+    // whole container and cannot be evicted until the game exits.
     public (long Total, long Warmed) ByteTotals()
     {
         lock (this.gate)
@@ -194,7 +165,7 @@ public sealed class ScdForge
         }
     }
 
-    /// <summary>A cache read with no side effects — never starts an encode.</summary>
+    // No side effects — never starts an encode.
     public bool TryGetForged(string variantKey, out ForgedClip? forged)
     {
         lock (this.gate)
@@ -203,7 +174,6 @@ public sealed class ScdForge
         }
     }
 
-    /// <summary>Whether a variant is currently encoding in the background.</summary>
     public bool IsInFlight(string variantKey)
     {
         lock (this.gate)
@@ -212,10 +182,7 @@ public sealed class ScdForge
         }
     }
 
-    /// <summary>
-    /// Why a variant will never encode, for a caller that needs to say so out loud.
-    /// </summary>
-    /// <remarks>A terminal answer: retrying it is what <see cref="Clear"/> is for.</remarks>
+    // Why a variant will never encode. A terminal answer: retrying it is what Clear is for.
     public bool TryGetFailure(string variantKey, out string reason)
     {
         lock (this.gate)
@@ -224,7 +191,7 @@ public sealed class ScdForge
         }
     }
 
-    /// <summary>Records a terminal encode failure and logs it once.</summary>
+    // Logs once.
     private void MarkFailed(string variantKey, string reason)
     {
         lock (this.gate)
@@ -238,7 +205,7 @@ public sealed class ScdForge
         this.log.Warning("ScdForge: {Key} will not encode — {Reason}", variantKey, reason);
     }
 
-    /// <summary>Registered clips the engine has never been asked for. Snapshot.</summary>
+    // Registered clips the engine has never been asked for. A snapshot.
     public List<ForgedClip> UnwarmedClips()
     {
         lock (this.gate)
@@ -256,9 +223,7 @@ public sealed class ScdForge
         }
     }
 
-    /// <summary>
-    /// Loads the container template. Cheap to call repeatedly; only the first does work.
-    /// </summary>
+    // Cheap to call repeatedly; only the first call does work.
     public bool Initialise()
     {
         if (this.template is not null)
@@ -315,7 +280,7 @@ public sealed class ScdForge
         return false;
     }
 
-    /// <summary>Re-evaluates readiness. Penumbra can be unloaded at any time.</summary>
+    // Penumbra can be unloaded at any time.
     private bool Refresh()
     {
         if (this.template is null)
@@ -357,29 +322,15 @@ public sealed class ScdForge
         return true;
     }
 
-    /// <summary>
-    /// Returns the forged clip for a variant, encoding it on first request.
-    /// </summary>
-    /// <param name="variantKey">
-    /// Stable identity of the exact audio <paramref name="source"/> will produce — clip
-    /// hash plus every parameter that changes a sample. Two requests with the same key must
-    /// be byte-identical, because the second will be served the first's file.
-    /// </param>
-    /// <param name="createSource">
-    /// Invoked only on a cache miss, then drained to completion. Pitch has already been
-    /// applied by the provider chain, so whatever mode the mapping uses is baked in here
-    /// and the engine plays at speed 1.
-    /// </param>
-    /// <returns>
-    /// True with a ready clip, or false having started the encode in the background.
-    /// </returns>
-    /// <remarks>
-    /// <b>Never encodes on the calling thread.</b> Measured on this machine, encoding a
-    /// five-second clip takes about 10 ms — over half a frame at 60 fps, on the game's main
-    /// thread, in combat. The first play of any clip was always going to fall back to the
-    /// managed sink for the warm-up anyway, so nothing is lost by making it fall back while
-    /// the encode happens off-thread instead of stalling the frame first.
-    /// </remarks>
+    // True with a ready clip, or false having started the encode in the background.
+    // variantKey identifies the exact audio createSource will produce — clip hash plus every
+    // parameter that changes a sample — because two requests with the same key are served
+    // the same file. createSource is invoked only on a cache miss, then drained to
+    // completion, with pitch already baked in by the provider chain so the engine plays at
+    // speed 1.
+    // Never encodes on the calling thread: a five-second clip takes about 10 ms, over half a
+    // frame at 60 fps, in combat. The first play falls back to the managed sink for the
+    // warm-up regardless, so nothing is lost by encoding off-thread.
     public bool TryForge(string variantKey, Func<ISampleProvider> createSource, out ForgedClip? forged)
     {
         forged = null;
@@ -415,7 +366,7 @@ public sealed class ScdForge
         return false;
     }
 
-    /// <summary>Encodes and writes off the game thread; registration happens in <see cref="Pump"/>.</summary>
+    // Off the game thread; registration happens in Pump.
     private void BeginEncode(string variantKey, Func<ISampleProvider> createSource)
     {
         // Captured before the task starts. `template` is written once during Initialise on
@@ -438,8 +389,7 @@ public sealed class ScdForge
 
                 if (tooLong)
                 {
-                    // Refuse, as MaxSeconds has always claimed to. Truncating instead
-                    // silently shortened the user's audio and then reported the clipped
+                    // Refuse rather than truncate: a shortened clip would report its clipped
                     // length back as fact.
                     this.MarkFailed(
                         variantKey,
@@ -456,9 +406,9 @@ public sealed class ScdForge
                 var payload = ScdWriter.AudioPayload.MsAdPcmMono(pcm, ClipLibrary.SampleRate);
                 var scd = ScdWriter.PointAudioAtOneEntry(snapshot, payload);
 
-                // A battle-voice container is authored to be intermittent — that is what
-                // makes a character grunt on some swings and not others. Cloning one
-                // inherits it, which presents as the native path firing only occasionally.
+                // A battle-voice container is authored to be intermittent, which is what
+                // makes a character grunt on some swings and not others. A clone inherits
+                // that, and presents as the native path firing only occasionally.
                 ScdInspector.ForceDeterministicPlayback(scd, out var certainty);
 
                 var name = ContentHash(scd);
@@ -499,13 +449,8 @@ public sealed class ScdForge
         });
     }
 
-    /// <summary>
-    /// Registers anything that finished encoding. Main thread only — Penumbra IPC is not
-    /// safe to call from a worker.
-    /// </summary>
-    /// <returns>
-    /// Clips registered by this call, which the caller must warm. Empty most frames.
-    /// </returns>
+    // Registers anything that finished encoding and returns it for the caller to warm; empty
+    // most frames. Main thread only — Penumbra IPC is not safe to call from a worker.
     public IReadOnlyList<ForgedClip> Pump()
     {
         if (this.completed.IsEmpty)
@@ -579,14 +524,9 @@ public sealed class ScdForge
         return registered;
     }
 
-    /// <summary>
-    /// Reads a provider to exhaustion into 16-bit mono samples.
-    /// </summary>
-    /// <param name="tooLong">
-    /// Set when the source ran past <see cref="MaxSeconds"/>. The caller refuses on this
-    /// rather than encoding what was collected: a truncated clip is indistinguishable from
-    /// a correct one once it is on disk.
-    /// </param>
+    // Reads a provider to exhaustion into 16-bit mono samples. tooLong is set when the
+    // source ran past MaxSeconds, and the caller refuses on it rather than encoding what was
+    // collected: a truncated clip is indistinguishable from a correct one once on disk.
     private static short[] Drain(ISampleProvider source, out float seconds, out bool tooLong)
     {
         var rate = source.WaveFormat.SampleRate;
@@ -618,18 +558,11 @@ public sealed class ScdForge
         return [.. collected];
     }
 
-    /// <summary>
-    /// Writes a content-addressed cache file: skip when it already exists, and land it
-    /// with a temp-then-move so the final name only ever holds complete bytes.
-    /// </summary>
-    /// <remarks>
-    /// The path is derived from the bytes, so "already exists with the right length"
-    /// means "already holds exactly this content" — overwriting would only risk an
-    /// IOException against a reader (a concurrent encode of a byte-identical variant,
-    /// or the game engine itself once the redirect has loaded). Both used to happen: a
-    /// plain WriteAllBytes here failed with "being used by another process" the moment
-    /// the pack builder ran two identical-content encodes at once.
-    /// </remarks>
+    // Skips when the file already exists, and lands it with a temp-then-move so the final
+    // name only ever holds complete bytes. The path is derived from the bytes, so "already
+    // exists with the right length" means "already holds exactly this content", and
+    // overwriting would only risk an IOException against a reader — a concurrent encode of a
+    // byte-identical variant, or the game engine once the redirect has loaded.
     private static void WriteContentAddressed(string localPath, byte[] scd)
     {
         var existing = new FileInfo(localPath);
@@ -677,14 +610,14 @@ public sealed class ScdForge
     private static string ContentHash(byte[] bytes)
         => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes), 0, 8).ToLowerInvariant();
 
-    /// <summary>Stops accepting work and drops every redirect. Call once, on unload.</summary>
+    // Call once, on unload.
     public void ShutDown()
     {
         this.shutDown = true;
         this.Clear();
     }
 
-    /// <summary>Drops every redirect. Files on disk are left for the next session.</summary>
+    // Drops every redirect. Files on disk are left for the next session.
     public void Clear()
     {
         lock (this.gate)

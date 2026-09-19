@@ -3,59 +3,44 @@ using System.Buffers.Binary;
 
 namespace Warcry.Native;
 
-/// <summary>
-/// Microsoft ADPCM encoder — 4 bits per sample, fixed-coefficient, no dependencies.
-/// </summary>
-/// <remarks>
-/// <para><b>Why this and not PCM.</b> A survey of the game's own SCDs (2026-08-17) found
-/// 267 MS-ADPCM entries across 18 of 26 files, 92 HCA entries, and <em>zero</em> PCM. The
-/// engine accepted our container and refused to decode a <c>Format = 0x01</c> entry, which
-/// is consistent with that path being dead code. MS-ADPCM is the format the engine
-/// demonstrably plays that we can also write.</para>
-/// <para><b>Why not Vorbis or HCA.</b> HCA is proprietary and unencodable here. Vorbis would
-/// mean a new dependency for a codec the game uses less than ADPCM. MS-ADPCM is a
-/// documented, fixed-coefficient scheme that fits in one file.</para>
-/// <para>Mono only, deliberately: the game's own battle voice is mono 44.1 kHz, and so is
-/// everything <c>ManagedVoiceSink</c> produces, so there is no resampling or downmixing on
-/// the way in.</para>
-/// </remarks>
+// Microsoft ADPCM encoder — 4 bits per sample, fixed-coefficient, no dependencies.
+// It is the only format the engine both plays and we can write: the game's SCDs carry
+// MS-ADPCM and HCA and no PCM at all, the engine refuses to decode a Format = 0x01 entry,
+// HCA is proprietary, and Vorbis would mean a new dependency.
+// Mono only: the game's battle voice is mono 44.1 kHz and so is everything
+// ManagedVoiceSink produces, so nothing is resampled or downmixed on the way in.
 public static class MsAdPcm
 {
-    /// <summary>Standard MS-ADPCM step-size adaptation table, indexed by the 4-bit code.</summary>
+    // Standard MS-ADPCM step-size adaptation table, indexed by the 4-bit code.
     private static readonly int[] Adaptation =
     [
         230, 230, 230, 230, 307, 409, 512, 614,
         768, 614, 512, 409, 307, 230, 230, 230,
     ];
 
-    /// <summary>The seven standard predictor coefficient pairs, scaled by 256.</summary>
+    // The seven standard predictor coefficient pairs, scaled by 256.
     private static readonly int[] CoefficientA = [256, 512, 0, 192, 240, 460, 392];
 
     private static readonly int[] CoefficientB = [0, -256, 0, 64, 0, -208, -232];
 
-    /// <summary>Bytes of per-block header for a mono stream: predictor, delta, two samples.</summary>
+    // Mono block header: predictor, delta, two samples.
     private const int MonoBlockHeader = 7;
 
-    /// <summary>The smallest step size the format allows.</summary>
+    // The smallest step size the format allows.
     private const int MinimumDelta = 16;
 
     public const int CoefficientCount = 7;
 
-    /// <summary>Block size in bytes. 256 is the common choice for mono at 44.1 kHz.</summary>
+    // Bytes. 256 is the common choice for mono at 44.1 kHz.
     public const int DefaultBlockAlign = 256;
 
-    /// <summary>How many decoded samples one block carries.</summary>
-    /// <remarks>
-    /// Two samples travel in the block header uncompressed; the remaining bytes hold two
-    /// 4-bit codes each.
-    /// </remarks>
+    // Two samples travel in the block header uncompressed; the remaining bytes hold two
+    // 4-bit codes each.
     public static int SamplesPerBlock(int blockAlign)
         => ((blockAlign - MonoBlockHeader) * 2) + 2;
 
-    /// <summary>
-    /// Encodes mono 16-bit PCM. The final block is padded with its own last sample rather
-    /// than with silence, so no click is introduced at the end.
-    /// </summary>
+    // The final block is padded with its own last sample rather than with silence, so no
+    // click is introduced at the end.
     public static byte[] EncodeMono(ReadOnlySpan<short> pcm, int blockAlign = DefaultBlockAlign)
     {
         if (blockAlign <= MonoBlockHeader)
@@ -92,13 +77,8 @@ public static class MsAdPcm
         return output;
     }
 
-    /// <summary>
-    /// Encodes one block, choosing whichever of the seven predictors reproduces it best.
-    /// </summary>
-    /// <remarks>
-    /// Trying all seven costs seven passes over 500 samples and measurably improves quality
-    /// on speech, where the fixed coefficients otherwise fit poorly.
-    /// </remarks>
+    // Tries all seven predictors and keeps the best. Seven passes over 500 samples, and
+    // worth it on speech, where the fixed coefficients otherwise fit poorly.
     private static void EncodeBlock(ReadOnlySpan<short> block, Span<byte> destination)
     {
         var bestPredictor = 0;
@@ -117,11 +97,8 @@ public static class MsAdPcm
         EncodeWithPredictor(block, bestPredictor, destination);
     }
 
-    /// <summary>
-    /// Encodes with a fixed predictor, writing to <paramref name="destination"/> when it is
-    /// non-empty and otherwise only accumulating the error, so predictor selection and the
-    /// real encode share one implementation.
-    /// </summary>
+    // Writes to destination when it is non-empty and otherwise only accumulates the error,
+    // so predictor selection and the real encode share one implementation.
     private static long EncodeWithPredictor(ReadOnlySpan<short> block, int predictor, Span<byte> destination)
     {
         var coefA = CoefficientA[predictor];
@@ -180,15 +157,11 @@ public static class MsAdPcm
         return totalError;
     }
 
-    /// <summary>
-    /// A starting step size derived from the block's own dynamics.
-    /// </summary>
-    /// <remarks>
-    /// A fixed initial delta of 16 makes the adaptation climb for a dozen samples at the
-    /// start of every block, which on loud material is audible as a click every 500 samples.
-    /// The quantised error has to fit in [-8, 7], so a step of roughly one seventh of the
-    /// typical sample-to-sample change is the right neighbourhood.
-    /// </remarks>
+    // A starting step size derived from the block's own dynamics. A fixed initial delta of
+    // 16 makes the adaptation climb for a dozen samples at the start of every block, which
+    // on loud material is audible as a click every 500 samples. The quantised error has to
+    // fit in [-8, 7], so roughly one seventh of the typical sample-to-sample change is the
+    // right neighbourhood.
     private static int InitialDelta(ReadOnlySpan<short> block)
     {
         long total = 0;
@@ -201,17 +174,11 @@ public static class MsAdPcm
         return (int)Math.Clamp(mean / 4, MinimumDelta, short.MaxValue);
     }
 
-    /// <summary>
-    /// The <c>WAVEFORMATEX</c>-shaped codec header an MS-ADPCM audio entry carries in its
-    /// SubInfo block: 18 bytes of format plus 32 bytes of ADPCM extra, 50 total.
-    /// </summary>
-    /// <remarks>
-    /// Authored from the documented Microsoft layout rather than copied from a game file,
-    /// which was the open risk here — but the engine has since played containers carrying
-    /// this exact header, verified in game on 2026-08-18 (see <c>docs/native-spike.md</c>),
-    /// so the 50-byte <c>SubInfoSize = 0x32</c> shape is confirmed accepted. Re-check after
-    /// a game patch, like everything else on the native path.
-    /// </remarks>
+    // The WAVEFORMATEX-shaped codec header an MS-ADPCM audio entry carries in its SubInfo
+    // block: 18 bytes of format plus 32 bytes of ADPCM extra, 50 total. Authored from the
+    // documented Microsoft layout rather than copied from a game file; the engine accepts
+    // this 50-byte SubInfoSize = 0x32 shape (docs/native-spike.md). Re-check after a game
+    // patch, like everything else on the native path.
     public static byte[] BuildCodecHeader(int channels, int sampleRate, int blockAlign)
     {
         var samplesPerBlock = SamplesPerBlock(blockAlign);

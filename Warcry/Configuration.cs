@@ -8,119 +8,67 @@ using Warcry.Game;
 
 namespace Warcry;
 
-/// <summary>
-/// Plugin settings only. Profiles and clip metadata deliberately live in separate
-/// System.Text.Json files under GetPluginConfigDirectory() — SavePluginConfig writes
-/// through IReliableFileStorage (duplicates every byte into a SQLite backup, hard-fails
-/// above 64MB, and is synchronous) and serialises with TypeNameHandling.Objects.
-/// See docs/PLAN.md 5.8.
-/// </summary>
-/// <remarks>
-/// The namespace of this type is baked into every user's config file by
-/// TypeNameHandling.Objects. Moving or renaming it orphans their settings.
-/// It is fixed as <c>Warcry.Configuration</c>.
-/// </remarks>
+// Plugin settings only. Profiles and clip metadata live in separate System.Text.Json files
+// under GetPluginConfigDirectory(), because SavePluginConfig writes through
+// IReliableFileStorage — duplicating every byte into a SQLite backup, hard-failing above
+// 64MB, synchronous — and serialises with TypeNameHandling.Objects. See docs/PLAN.md 5.8.
+// That serialisation bakes this type's namespace into every user's config file, so it is
+// fixed as Warcry.Configuration: moving or renaming it orphans their settings.
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
-    /// <summary>
-    /// The schema version this build writes. Bump it and add a step to
-    /// <see cref="Migrate"/> whenever a field changes meaning or goes away.
-    /// </summary>
+    // Bump and add a Migrate step whenever a field changes meaning or goes away.
     public const int CurrentVersion = 5;
 
-    /// <summary>Schema version. Bump and add an ordered migration step when fields change.</summary>
     public int Version { get; set; } = CurrentVersion;
 
     public bool Enabled { get; set; } = true;
 
-    // ---- audio (M3) ----
-
-    /// <summary>Master trim on top of the game's own sliders.</summary>
+    // Master trim on top of the game's own sliders.
     public float MasterGain { get; set; } = 1.0f;
 
-    /// <summary>Scale by the game's Voice slider rather than Sound Effects.</summary>
+    // Scale by the game's Voice slider rather than Sound Effects.
     public bool UseVoiceSliderNotSe { get; set; } = true;
 
-    /// <summary>
-    /// Hard cap on simultaneous plugin voices. Not a taste setting: the game's SoundData
-    /// pool is 256 entries shared with the entire client and the Voice bus has 5 tracks.
-    /// </summary>
+    // Hard cap: the game's SoundData pool is 256 entries shared with the entire client and
+    // the Voice bus has 5 tracks.
     public int MaxConcurrent { get; set; } = 3;
 
-    /// <summary>
-    /// Play clips on your own actions — the playback master switch. Off keeps detection
-    /// and the Events tab running but plays nothing.
-    /// </summary>
-    /// <remarks>The name is historical; renaming it would orphan saved configs.</remarks>
+    // The playback master switch. Off keeps detection and the Events tab running but plays
+    // nothing. The name is historical; renaming it would orphan saved configs.
     public bool PlayTestToneOnActions { get; set; } = true;
 
-    /// <summary>
-    /// Which sink gameplay lines are routed to. See <see cref="SinkMode"/>.
-    /// </summary>
-    /// <remarks>
-    /// <para>Defaults to <see cref="SinkMode.Auto"/>: the engine when Penumbra is present,
-    /// NAudio otherwise, so a fresh install is never silent. The earlier ManagedOnly
-    /// default existed only because PLAN.md §6 (b)–(e) were unmeasured; all of them (and
-    /// the speed argument) passed in game on 2026-08-18 — see docs/native-spike.md.</para>
-    /// <para><see cref="SinkMode.NativeOnly"/> and <see cref="SinkMode.Auto"/> require
-    /// Penumbra. NativeOnly never substitutes NAudio — a refused line is a counted,
-    /// explained drop.</para>
-    /// </remarks>
+    // Auto means the engine when Penumbra is present and NAudio otherwise, so a fresh
+    // install is never silent. NativeOnly and Auto both require Penumbra, and NativeOnly
+    // never substitutes NAudio — a refused line is a counted, explained drop.
     public SinkMode Sink { get; set; } = SinkMode.Auto;
 
-    /// <summary>
-    /// Where a line sounds from, and whether it tracks its caster. See
-    /// <see cref="VoicePositionMode"/>.
-    /// </summary>
-    /// <remarks>
-    /// <para>Defaults to <see cref="VoicePositionMode.Follow"/>, confirmed working in game on
-    /// 2026-08-24: the engine treats a position handed to <c>PlaySound</c> as fixed for the
-    /// whole clip and the listener follows the camera, so without following, any skill that
-    /// displaces you leaves your own voiceline behind and it fades out mid-word.</para>
-    /// <para>Native sink only. NAudio has no positional model at all, so a line that falls
-    /// back to it in <see cref="SinkMode.Auto"/> ignores this.</para>
-    /// </remarks>
+    // Native sink only; NAudio has no positional model, so a line that falls back to it in
+    // Auto ignores this.
+    // Follow by default: the engine treats a position handed to PlaySound as fixed for the
+    // whole clip while the listener follows the camera, so without following, any skill that
+    // displaces you leaves your voiceline behind and it fades out mid-word.
     public VoicePositionMode VoicePosition { get; set; } = VoicePositionMode.Follow;
 
-    /// <summary>
-    /// Play the synthesised tone when an action has no clip mapped. Useful while setting
-    /// mappings up — audible proof the action was detected — and noise once you are done.
-    /// </summary>
+    // The synthesised tone for an action with no clip mapped: audible proof the action was
+    // detected while setting mappings up, and noise once you are done.
     public bool FallBackToTestTone { get; set; } = true;
 
-    /// <summary>
-    /// Delay playback until the cast bar has actually finished, using the per-event
-    /// measured remainder. Instants self-gate (no cast bar, so zero delay).
-    /// </summary>
+    // Delay playback until the cast bar has finished, using the per-event measured
+    // remainder. Instants self-gate — no cast bar, so zero delay.
     public bool WaitForCastToFinish { get; set; } = true;
 
-    // ---- the game's own battle grunt (M10) ----
-
-    /// <summary>
-    /// How much of the game's own battle grunt to silence.
-    /// </summary>
-    /// <remarks>
-    /// <see cref="GruntMode.Off"/> by default, and no migration step raises it: an update
-    /// that changes what the game sounds like without being asked is the same nasty
-    /// surprise as one that starts voicing strangers. Damage-taken and death grunts are
-    /// never touched in any mode — see <see cref="Audio.GruntSuppressor"/>.
-    /// </remarks>
+    // Off by default, and no migration step raises it: an update that changes what the game
+    // sounds like without being asked is as unwelcome as one that starts voicing strangers.
+    // Damage-taken and death grunts are never touched in any mode — see GruntSuppressor.
     public GruntMode Grunts { get; set; } = GruntMode.Off;
 
-    /// <summary>
-    /// How long after a cast the game's grunt for it stays suppressed.
-    /// Only <see cref="GruntMode.WhenVoiced"/> reads it.
-    /// </summary>
-    /// <remarks>
-    /// The grunt is animation-driven and lands 5-1071 ms after snapshot, fixed per action
-    /// (docs/native-spike.md), so nothing shorter than about a second covers the slow end.
-    /// Exposed rather than fixed because the cost of a long window is eating the *next*
-    /// action's grunt on a fast rotation.
-    /// </remarks>
+    // How long after a cast the game's grunt for it stays suppressed; only WhenVoiced reads
+    // it. The grunt is animation-driven and lands 5-1071 ms after snapshot, fixed per action
+    // (docs/native-spike.md), so nothing shorter than about a second covers the slow end.
+    // Exposed rather than fixed because a long window eats the NEXT action's grunt on a fast
+    // rotation.
     public float GruntWindowSeconds { get; set; } = 1.5f;
-
-    // ---- gates (M6) ----
 
     public bool DisableInCutscenes { get; set; } = true;
 
@@ -130,123 +78,86 @@ public sealed class Configuration : IPluginConfiguration
 
     public bool DisableInQuestEvents { get; set; } = true;
 
-    /// <summary>TerritoryType ids where nothing plays. Useful for hub cities.</summary>
+    // TerritoryType ids where nothing plays. Useful for hub cities.
     public HashSet<uint> BlockedTerritories { get; set; } = [];
 
-    // ---- audience (M9) ----
-
-    /// <summary>
-    /// Whose actions are heard at all. Anything not in this set is a counted
-    /// <see cref="DropStage.Audience"/> drop.
-    /// </summary>
-    /// <remarks>
-    /// Defaults to <see cref="AudienceBucket.Self"/>, which is what every install before
-    /// this feature did. Widening it is always the user's explicit act — a plugin that
-    /// starts voicing strangers after an update would be a nasty surprise.
-    /// </remarks>
+    // Whose actions are heard at all; anything else is a counted DropStage.Audience drop.
+    // Self by default, and widening it is always the user's explicit act — a plugin that
+    // starts voicing strangers after an update would be a nasty surprise.
     public AudienceBucket Audience { get; set; } = AudienceBucket.Self;
 
-    /// <summary>
-    /// Players listed by hand. Heard when <see cref="AudienceBucket.Named"/> is enabled,
-    /// and separately targetable by a profile.
-    /// </summary>
+    // Heard when AudienceBucket.Named is enabled, and separately targetable by a profile.
     public List<NamedPlayer> NamedPeople { get; set; } = [];
 
-    /// <summary>Players who never play a line, whatever else would have matched.</summary>
-    /// <remarks>Checked before every bucket except <see cref="AudienceBucket.Self"/>.</remarks>
+    // Never play a line, whatever else would have matched. Checked before every bucket
+    // except Self.
     public List<NamedPlayer> BlockedPeople { get; set; } = [];
 
-    /// <summary>
-    /// Yalms past which someone else's line is not played. 0 disables the gate.
-    /// </summary>
-    /// <remarks>
-    /// Not the same job as the engine's falloff, which only makes a distant line quiet.
-    /// This stops it being requested at all, so it costs no voice from the concurrency cap
-    /// and no slot in the game's shared sound pool. Never applied to your own actions.
-    /// </remarks>
+    // Yalms past which someone else's line is not played; 0 disables the gate. Not the
+    // engine's falloff, which only makes a distant line quiet: this stops the line being
+    // requested at all, so it costs no voice from the concurrency cap and no slot in the
+    // game's shared sound pool. Never applied to your own actions.
     public int MaxDistanceYalms { get; set; } = 30;
 
-    /// <summary>Volume trim applied to everyone but you.</summary>
+    // Volume trim applied to everyone but you.
     public float OtherPlayerGain { get; set; } = 0.8f;
 
-    // ---- throttle (M6, per-audience at M9) ----
-
-    /// <summary>Seconds before the same caster can trigger another line. 0 disables.</summary>
+    // Seconds before the same caster can trigger another line. 0 disables.
     public float SelfCooldownSeconds { get; set; } = 2.0f;
 
-    /// <summary>Per-caster cooldown for someone on your named list.</summary>
     public float NamedCooldownSeconds { get; set; } = 3.0f;
 
-    /// <summary>Per-caster cooldown for party, alliance and friends.</summary>
+    // Party, alliance and friends.
     public float PartyCooldownSeconds { get; set; } = 4.0f;
 
-    /// <summary>Per-caster cooldown for everyone else.</summary>
     public float OtherCooldownSeconds { get; set; } = 6.0f;
 
-    /// <summary>
-    /// Stretch other people's cooldowns as the crowd grows. See docs/PLAN.md 5.7 stage 3.
-    /// </summary>
-    /// <remarks>
-    /// Your own lines are never scaled. The whole point is that a hub city or a 48-player
-    /// alliance raid quietens the strangers around you without making you inaudible.
-    /// </remarks>
+    // Stretch other people's cooldowns as the crowd grows (docs/PLAN.md 5.7 stage 3). Your
+    // own lines are never scaled: a hub city should quieten the strangers around you without
+    // making you inaudible.
     public bool ScaleWithCrowd { get; set; } = true;
 
-    /// <summary>Nearby audience members above which cooldowns start stretching.</summary>
+    // Nearby audience members above which cooldowns start stretching.
     public int SoftCrowdLimit { get; set; } = 12;
 
-    /// <summary>Ceiling on the crowd multiplier, so a full raid cannot mute everyone forever.</summary>
+    // Ceiling on the crowd multiplier, so a full raid cannot mute everyone forever.
     public float MaxCrowdScale { get; set; } = 6.0f;
 
-    /// <summary>
-    /// Cap the total rate of other people's lines. See docs/PLAN.md 5.7 stage 4.
-    /// </summary>
-    /// <remarks>
-    /// The per-caster cooldown bounds one person; this bounds the sum of them. Requests are
-    /// dropped rather than queued — a voiceline that arrives late is worse than one that
-    /// never arrives.
-    /// </remarks>
+    // Caps the total rate of other people's lines (docs/PLAN.md 5.7 stage 4). The per-caster
+    // cooldown bounds one person; this bounds the sum of them. Requests are dropped rather
+    // than queued — a voiceline that arrives late is worse than one that never arrives.
     public bool LimitTotalRate { get; set; } = true;
 
-    /// <summary>How many other people's lines may fire back to back before the rate bites.</summary>
+    // How many other people's lines may fire back to back before the rate bites.
     public int RateBurst { get; set; } = 4;
 
-    /// <summary>Seconds to earn back one line of burst.</summary>
+    // Seconds to earn back one line of burst.
     public float RateRefillSeconds { get; set; } = 1.5f;
 
-    /// <summary>Auto-attacks fire constantly and are never worth a voiceline.</summary>
+    // Auto-attacks fire constantly and are never worth a voiceline.
     public bool SkipAutoAttacks { get; set; } = true;
 
-    /// <summary>Only voice actions that have a cast bar.</summary>
+    // Only voice actions that have a cast bar.
     public bool CastsOnly { get; set; }
 
-    /// <summary>Actions that never play, whatever is mapped to them.</summary>
+    // Actions that never play, whatever is mapped to them.
     public HashSet<uint> MutedActionIds { get; set; } = [];
 
-    /// <summary>
-    /// Action ids actually observed firing on this character. The Action sheet contains
-    /// duplicates, unused rows and NPC copies, so "which of the five Riposte rows is the
-    /// real one" is not answerable from the sheet — but it is answerable from what the
-    /// hook has seen. Persisted so the list survives a restart.
-    /// </summary>
+    // Action ids actually observed firing on this character. The Action sheet contains
+    // duplicates, unused rows and NPC copies, so "which of the five Riposte rows is the real
+    // one" is not answerable from the sheet, only from what the hook has seen. Persisted so
+    // the list survives a restart.
     public List<uint> ObservedActionIds { get; set; } = [];
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 
-    /// <summary>
-    /// Reads the stored config, migrates it, and repairs anything unusable.
-    /// </summary>
-    /// <remarks>
-    /// <para>The plain <c>GetPluginConfig() as Configuration ?? new()</c> this replaces had
-    /// two silent failure modes: a config that fails to deserialise resets every setting
-    /// with no word to the user, and a collection property that comes back <c>null</c> —
-    /// which a hand-edited or truncated file will do, since the initialisers here only
-    /// apply to a fresh object — throws a <c>NullReferenceException</c> from inside the
-    /// action hook the first time anything reads it.</para>
-    /// <para>Writes back only when something actually changed, so a normal start does not
-    /// touch the disk. <c>SavePluginConfig</c> is synchronous and writes through
-    /// IReliableFileStorage, so it is not free.</para>
-    /// </remarks>
+    // Reads the stored config, migrates it, and repairs anything unusable. A config that
+    // fails to deserialise must not silently reset every setting, and a collection property
+    // that comes back null — which a hand-edited or truncated file does, since the
+    // initialisers above only apply to a fresh object — would throw from inside the action
+    // hook the first time anything read it.
+    // Writes back only when something changed: SavePluginConfig is synchronous and writes
+    // through IReliableFileStorage, so a normal start should not touch the disk.
     public static Configuration LoadOrCreate(IDalamudPluginInterface pluginInterface, IPluginLog log)
     {
         Configuration config;
@@ -274,16 +185,10 @@ public sealed class Configuration : IPluginConfiguration
         return config;
     }
 
-    /// <summary>
-    /// Walks the version ladder. Each step upgrades by exactly one version so a config from
-    /// any age arrives intact.
-    /// </summary>
-    /// <remarks>
-    /// v5 is the first schema any user can hold: every earlier version existed only between
-    /// development commits, before 0.2.0.0 was released, so their steps were unreachable and
-    /// are gone. Add new steps as <c>if (this.Version &lt; N) { …; this.Version = N; }</c>,
-    /// in order.
-    /// </remarks>
+    // Walks the version ladder, one version per step, so a config of any age arrives intact.
+    // v5 is the first schema any user can hold; every earlier version existed only between
+    // development commits. Add steps as if (this.Version < N) { …; this.Version = N; }, in
+    // order.
     private bool Migrate(IPluginLog log)
     {
         if (this.Version == CurrentVersion)
@@ -306,15 +211,12 @@ public sealed class Configuration : IPluginConfiguration
 
         var from = this.Version;
 
-        // -- add ordered migration steps here --
-
         if (this.Version < 5)
         {
-            // v5 (2026-08-24): the audience filter went live. Everything before it was
-            // self-only, and that is what the user consented to, so an upgrade must not
-            // start voicing anyone new. The profiles they already have become "everyone"
-            // targets — see ProfileMatch.Audience, which defaults that way for exactly
-            // this reason — but the global filter stays shut until they open it.
+            // v5: the audience filter. Everything before it was self-only, which is what the
+            // user consented to, so an upgrade must not start voicing anyone new. Existing
+            // profiles become "everyone" targets — ProfileMatch.Audience defaults that way —
+            // but the global filter stays shut until the user opens it.
             this.Audience = AudienceBucket.Self;
             this.Version = 5;
         }
@@ -324,13 +226,9 @@ public sealed class Configuration : IPluginConfiguration
         return true;
     }
 
-    /// <summary>
-    /// Forces every value back into a range the plugin can actually run with.
-    /// </summary>
-    /// <remarks>
-    /// Guards against a hand-edited file, a partial write, and NaN — which propagates
-    /// silently through the gain chain and turns into inaudible output rather than an error.
-    /// </remarks>
+    // Forces every value back into a range the plugin can run with: a hand-edited file, a
+    // partial write, or NaN, which propagates silently through the gain chain and turns into
+    // inaudible output rather than an error.
     private bool Repair(IPluginLog log)
     {
         var repairs = 0;

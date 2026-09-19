@@ -4,27 +4,19 @@ using Warcry.Game;
 
 namespace Warcry.Audio;
 
-/// <summary>
-/// Routes each gameplay line to a sink according to the configured <see cref="SinkMode"/>.
-/// </summary>
-/// <remarks>
-/// <para>The modes differ in what a native refusal means. In <see cref="SinkMode.Auto"/> it
-/// is routine — a cold clip, a missing Penumbra — and the line falls through to NAudio. In
-/// <see cref="SinkMode.NativeOnly"/> it is a visible drop: the refusal reason is kept on
-/// <see cref="LastRefusal"/> and counted, and nothing substitutes. That is the mode's whole
-/// contract — what you hear is always the game's engine, and silence always names itself.</para>
-/// <para>The concurrency cap is enforced here, over the <em>sum</em> of both sinks' voices.
-/// Each leaf also guards its own count for callers that use it directly, but only this sum
-/// respects what the cap is for: the game's 256-entry SoundData pool and 5-track Voice bus
-/// are global, so "max at once" must mean at once anywhere, not per sink.</para>
-/// <para>Demotion is sticky for the session. A native path that has thrown three times is
-/// not going to start working because the fourth line arrived, and retrying it forever
-/// costs a failed encode on every cast. In NativeOnly, demotion means silence plus a
-/// banner, never a quiet swap to NAudio.</para>
-/// </remarks>
+// Routes each gameplay line to a sink according to the configured SinkMode. The modes
+// differ in what a native refusal means: in Auto it is routine — a cold clip, a missing
+// Penumbra — and the line falls through to NAudio, while in NativeOnly it is a visible drop
+// kept on LastRefusal and counted, with nothing substituting.
+// The concurrency cap is enforced here over the SUM of both sinks' voices. Each leaf also
+// guards its own count, but the game's 256-entry SoundData pool and 5-track Voice bus are
+// global, so "max at once" means at once anywhere, not per sink.
+// Demotion is sticky for the session: retrying a native path that has already struck out
+// costs a failed encode on every cast. In NativeOnly it means silence plus a banner, never
+// a quiet swap to NAudio.
 public sealed class CompositeVoiceSink : IDisposable
 {
-    /// <summary>Errors tolerated before the native path is abandoned for the session.</summary>
+    // Errors tolerated before the native path is abandoned for the session.
     private const int StrikeLimit = 3;
 
     private readonly IPluginLog log;
@@ -43,31 +35,27 @@ public sealed class CompositeVoiceSink : IDisposable
         this.managed = managed;
     }
 
-    /// <summary>The leaf auditioning must use, so a preview never depends on a compile.</summary>
+    // The leaf auditioning must use, so a preview never depends on a compile.
     public ManagedVoiceSink Managed => this.managed;
 
-    /// <summary>The native leaf, for the Sound pack tab's warm/refusal readouts.</summary>
     public NativeVoiceSink Native => this.native;
 
-    /// <summary>Whether the native sink is currently the one lines are routed to first.</summary>
+    // Whether the native sink is the one lines are routed to first.
     public bool NativeActive =>
         this.config.Sink is SinkMode.Auto or SinkMode.NativeOnly
         && !this.Demoted
         && this.native.Available;
 
-    /// <summary>Sticky for the session once the native sink has struck out.</summary>
+    // Sticky for the session once the native sink has struck out.
     public bool Demoted { get; private set; }
 
-    /// <summary>How many lines the native sink has actually played this session.</summary>
     public long NativePlays { get; private set; }
 
-    /// <summary>How many were played by the managed sink.</summary>
     public long ManagedPlays { get; private set; }
 
-    /// <summary>Why the last refused line did not play, or empty if the last line played.</summary>
+    // Empty if the last line played.
     public string LastRefusal { get; private set; } = string.Empty;
 
-    /// <summary>Why the native sink last declined, for the Status tab.</summary>
     public string NativeRefusal => this.native.LastRefusal;
 
     public string Status

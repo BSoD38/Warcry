@@ -1,14 +1,8 @@
 namespace Warcry.Audio;
 
-/// <summary>
-/// Reads the game's own volume sliders so plugin audio behaves like game audio.
-/// </summary>
-/// <remarks>
-/// <para>Confirmed in game 2026-08-17: all seven Sound* keys resolve, values are 0-100,
-/// and the IsSnd* booleans are MUTE flags — <c>true</c> means muted, not enabled. That
-/// polarity matters enormously: inverted, muting the game would make the plugin loud.</para>
-/// <para>Always TryGet — <c>GameConfigSection.GetUInt</c> throws on a missing option.</para>
-/// </remarks>
+// Reads the game's own volume sliders so plugin audio behaves like game audio.
+// Sound* values are 0-100. The IsSnd* booleans are MUTE flags: true means muted.
+// Always TryGet: GameConfigSection.GetUInt throws on a missing option.
 public sealed class GameVolume
 {
     private const double RefreshSeconds = 0.5;
@@ -33,10 +27,8 @@ public sealed class GameVolume
 
     public bool MutedVoice { get; private set; }
 
-    /// <summary>
-    /// Cheap periodic refresh rather than subscribing to IGameConfig.SystemChanged —
-    /// config changes are rare and this avoids depending on the event signature.
-    /// </summary>
+    // Periodic refresh rather than IGameConfig.SystemChanged — config changes are rare and
+    // this avoids depending on the event signature.
     public void Update(double totalSeconds)
     {
         if (totalSeconds - this.lastRefresh < RefreshSeconds)
@@ -70,15 +62,9 @@ public sealed class GameVolume
             => system.TryGetBool(key, out var v) ? v : fallback;
     }
 
-    /// <summary>
-    /// Final multiplier for a voice, from the game's own settings alone.
-    /// Returns 0 when the relevant channel is muted.
-    /// </summary>
-    /// <param name="soundCategory">Character+0x2369: 0 Player, 1 Party, 2 Other.</param>
-    /// <param name="useVoiceBus">Scale by the Voice slider rather than Sound Effects.</param>
+    // soundCategory is Character+0x2369: 0 Player, 1 Party, 2 Other. 0 when muted.
     public float GainFor(byte soundCategory, bool useVoiceBus)
     {
-        // true = muted.
         if (this.MutedMaster || (useVoiceBus ? this.MutedVoice : this.MutedSe))
         {
             return 0f;

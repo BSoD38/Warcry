@@ -3,27 +3,18 @@ using System.Buffers.Binary;
 
 namespace Warcry.Native;
 
-/// <summary>
-/// Parses a real game <c>.scd</c> and rewrites a clone of it to carry our audio, keeping
-/// the original file as a structural template.
-/// </summary>
-/// <remarks>
-/// <para><b>Why template rather than author from scratch.</b> The audio-entry header is
-/// eight plain u32 fields and is fully understood (see docs/native-spike.md). The
-/// sound-entry and layout structures are NOT — hand-authoring them blind is how you get
-/// a silent load failure with no diagnostic. Copying a real file's container and entry
-/// bytes verbatim, and substituting only the audio, keeps every unknown field at a value
-/// the engine already accepts.</para>
-/// <para>The template is read from the user's own game install at runtime via
-/// <c>IDataManager.GetFile</c>, so no game data is ever shipped with the plugin and the
-/// structures always match their client version.</para>
-/// </remarks>
+// Parses a real game .scd and rewrites a clone of it to carry our audio, keeping the
+// original as a structural template. The audio-entry header is eight plain u32 fields and
+// is fully understood (docs/native-spike.md); the sound-entry and layout structures are
+// not, and hand-authoring them blind gives a silent load failure with no diagnostic.
+// Copying the container verbatim and substituting only the audio keeps every unknown field
+// at a value the engine already accepts.
+// The template comes from the user's own game install at runtime via
+// IDataManager.GetFile, so no game data ships with the plugin and the structures always
+// match the client version.
 public static class ScdWriter
 {
-    /// <summary>
-    /// SscfWaveFormat.MsAdPcm — what we encode. A survey of the game's own SCDs found
-    /// MS-ADPCM and HCA (which we cannot encode) and not one PCM entry.
-    /// </summary>
+    // SscfWaveFormat.MsAdPcm. See MsAdPcm for why this format.
     public const uint FormatMsAdPcm = 0x0C;
 
     private const int HeaderSize = 0x30;
@@ -35,14 +26,8 @@ public static class ScdWriter
     private const int OffAudioTable = 0x3C;
     private const int OffTable3 = 0x40;
 
-    /// <summary>
-    /// One encoded audio entry: the eight header fields plus the codec header the format
-    /// needs.
-    /// </summary>
-    /// <remarks>
-    /// Every format the game actually uses needs a codec header, so the payload carries
-    /// its own.
-    /// </remarks>
+    // One encoded audio entry: the eight header fields plus the codec header. Every format
+    // the game uses needs one, so the payload carries its own.
     public readonly record struct AudioPayload(
         uint Format,
         uint SampleRate,
@@ -50,7 +35,6 @@ public static class ScdWriter
         byte[] SubInfo,
         byte[] Data)
     {
-        /// <summary>Mono MS-ADPCM — the format the game demonstrably plays and we can write.</summary>
         public static AudioPayload MsAdPcmMono(
             ReadOnlySpan<short> pcm, uint sampleRate, int blockAlign = MsAdPcm.DefaultBlockAlign)
             => new(
@@ -60,11 +44,11 @@ public static class ScdWriter
                 MsAdPcm.BuildCodecHeader(1, (int)sampleRate, blockAlign),
                 MsAdPcm.EncodeMono(pcm, blockAlign));
 
-        /// <summary>Total bytes this entry occupies, header included.</summary>
+        // Header included.
         public int TotalLength => 32 + this.SubInfo.Length + this.Data.Length;
     }
 
-    /// <summary>Parsed shape of a game SCD, enough to lift one entry out of it.</summary>
+    // Parsed shape of a game SCD, enough to lift one entry out of it.
     public sealed class Template
     {
         public required byte[] Bytes { get; init; }
@@ -73,12 +57,9 @@ public static class ScdWriter
 
         public required uint[] Table3Offsets { get; init; }
 
-        /// <summary>Offset of the audio-entry offset table itself (the u32 array at 0x3C points here).</summary>
-        /// <remarks>
-        /// Needed by <see cref="PointAudioAtOneEntry"/>: group records reference audio by
-        /// <em>index</em>, and this table is what turns an index into a file offset. Rewrite
-        /// it and every index resolves wherever you like.
-        /// </remarks>
+        // Offset of the audio-entry offset table itself (the u32 array at 0x3C points here).
+        // Group records reference audio by index, and this table turns an index into a file
+        // offset, so rewriting it makes every index resolve wherever you like.
         public required int AudioTableOffset { get; init; }
     }
 
@@ -121,9 +102,9 @@ public static class ScdWriter
             return false;
         }
 
-        // Every offset below comes straight from the file. This function is reachable from
-        // the cast path (forge initialisation), so a truncated or hostile file must come
-        // back as `false`, never as an ArgumentOutOfRangeException.
+        // Every offset below comes straight from the file, and this is reachable from the
+        // cast path, so a truncated or hostile file must come back as false rather than an
+        // ArgumentOutOfRangeException.
         if (!TryReadTable(span, audioTable, audioCount, out var audio))
         {
             error = "the audio-entry offset table lies outside the file";
@@ -177,31 +158,19 @@ public static class ScdWriter
         return true;
     }
 
-    /// <summary>
-    /// The field at 0x10 is NOT the file length. In the real template it reads 0x19CC0
-    /// (105664) for a 105776-byte file — short by exactly 0x70, the offset where the
-    /// table block begins. So it is "bytes from 0x70 to the end".
-    /// </summary>
+    // The field at 0x10 is NOT the file length but the bytes from 0x70 — where the table
+    // block begins — to the end.
     private static void PatchSizeField(byte[] bytes)
         => BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(0x10), (uint)(bytes.Length - 0x70));
 
-    /// <summary>
-    /// Makes playback deterministic by pointing every audio index at one appended entry.
-    /// </summary>
-    /// <remarks>
-    /// <para><b>Every index, not a scoped subset.</b> Scoping would matter when shadowing a
-    /// real <c>Vo_Battle</c> path, where the damage and death banks must survive. This only
-    /// ever writes our own synthetic path, which nothing else reads, so redirecting all of
-    /// them means <c>soundNumber 0</c> cannot miss and there is no group arithmetic.</para>
-    /// <para>A battle-voice SCD does not pick a waveform at random by accident — it contains
-    /// an explicit weighted-random table: group records reference audio by <em>index</em>,
-    /// and the table this method rewrites is what resolves an index to an offset. Point the
-    /// indices at one entry and every roll of the dice lands on our audio; the randomisation
-    /// is left completely intact and simply has nothing left to choose between.</para>
-    /// <para>The payload is <em>appended</em> past the end of the original file rather than
-    /// overwriting an existing entry, so every byte the untouched indices depend on
-    /// survives, and the payload has no length limit.</para>
-    /// </remarks>
+    // Makes playback deterministic by pointing EVERY audio index at one appended entry. The
+    // file's weighted-random table is left intact and simply has nothing left to choose
+    // between, so soundNumber 0 cannot miss and there is no group arithmetic. Scoping would
+    // only matter when shadowing a real Vo_Battle path, where the damage and death banks
+    // must survive; this only ever writes our own synthetic path.
+    // The payload is appended past the end of the original rather than overwriting an entry,
+    // so every byte the untouched indices depend on survives and the payload has no length
+    // limit.
     public static byte[] PointAudioAtOneEntry(Template template, AudioPayload payload)
     {
         var original = template.Bytes;
@@ -223,7 +192,7 @@ public static class ScdWriter
         return bytes;
     }
 
-    /// <summary>Writes the 32-byte entry header, its codec header, then the audio.</summary>
+    // The 32-byte entry header, its codec header, then the audio.
     private static void WriteAudioEntry(byte[] bytes, int start, AudioPayload payload)
     {
         var span = bytes.AsSpan();

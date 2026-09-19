@@ -7,16 +7,11 @@ using CSChar = FFXIVClientStructs.FFXIV.Client.Game.Character.Character;
 
 namespace Warcry.Windows;
 
-/// <summary>The Status tab, and the "Copy diagnostics" report it produces.</summary>
-/// <remarks>
-/// <para>Two audiences, one tab, in that order: a player asking "is it working?", then
-/// whoever is reading a bug report. The first answer is one line at the top; everything
-/// that needs vocabulary to interpret — hook addresses, the encoder, scheduler counters,
-/// the sound-slot accounting, raw character bytes — is collapsed under Details.</para>
-/// <para>It opened flat before, which meant the answer to "is it working" was somewhere in
-/// four screens of counters, and the counters most likely to alarm someone were the ones
-/// that are normal.</para>
-/// </remarks>
+// The Status tab, and the "Copy diagnostics" report it produces. Two audiences in order: a
+// player asking "is it working?", then whoever is reading a bug report. The first answer is
+// one line at the top; everything that needs vocabulary to interpret — hook addresses, the
+// encoder, scheduler counters, sound-slot accounting, raw character bytes — is collapsed
+// under Details.
 public sealed partial class MainWindow
 {
     private void DrawStatus()
@@ -64,7 +59,7 @@ public sealed partial class MainWindow
         Tip("Copies everything under Details as text, for pasting into a bug report.");
     }
 
-    /// <summary>The whole tab in one line, for someone who wants only that.</summary>
+    // The whole tab in one line.
     private void DrawVerdict()
     {
         var silence = this.plugin.ExplainSilence();
@@ -84,7 +79,7 @@ public sealed partial class MainWindow
             : $"   {played} line(s) played this session.");
     }
 
-    /// <summary>Where sound is going and how loud, without naming a single class.</summary>
+    // Where sound is going and how loud, without naming a single class.
     private void DrawSoundSummary()
     {
         var cfg = this.plugin.Config;
@@ -102,8 +97,8 @@ public sealed partial class MainWindow
 
         ImGui.TextUnformatted($"  Playing now   {this.plugin.Composite.ActiveVoices} of {cfg.MaxConcurrent} allowed");
 
-        // The whole point of reading the game's config: this number should track the
-        // in-game sliders live. If it stays 1.00 while Master moves, it isn't wired.
+        // This number tracks the in-game sliders live. If it stays 1.00 while Master moves,
+        // the game config is not wired up.
         var gameGain = vol.GainFor(0, cfg.UseVoiceSliderNotSe);
         var slider = cfg.UseVoiceSliderNotSe ? "Voice" : "Sound Effects";
         ImGui.TextUnformatted($"  Loudness      {gameGain * cfg.MasterGain:0.00}");
@@ -126,14 +121,9 @@ public sealed partial class MainWindow
             "Hearing this but not your voicelines points at mappings, not at audio.");
     }
 
-    /// <summary>
-    /// Who is being listened to and what the crowd is doing about it.
-    /// </summary>
-    /// <remarks>
-    /// Sits above the drop counters because it explains most of them. "1 240 lines skipped
-    /// for not being from someone you listen to" is alarming on its own and unremarkable
-    /// once you can see that you are listening to yourself in a city.
-    /// </remarks>
+    // Sits above the drop counters because it explains most of them: "1 240 lines skipped
+    // for not being from someone you listen to" is alarming alone and unremarkable next to
+    // "listening to: me", in a city.
     private void DrawAudienceSummary()
     {
         var cfg = this.plugin.Config;
@@ -170,15 +160,8 @@ public sealed partial class MainWindow
         }
     }
 
-    /// <summary>
-    /// The drop counters, in plain language, and only the ones that have happened.
-    /// </summary>
-    /// <remarks>
-    /// This lived at the bottom of the Settings tab, printing raw enum names —
-    /// <c>SinkRefused</c>, <c>TooFarOut</c>, <c>NotPc</c> — under the heading "Drops by
-    /// stage". Every one of those needs the source to interpret, on the one page a player
-    /// visits most.
-    /// </remarks>
+    // The drop counters, in plain language, and only the ones that have happened: a raw
+    // DropStage name needs the source to interpret.
     private void DrawWhyNotPlayed()
     {
         var diag = this.plugin.Diag;
@@ -210,10 +193,7 @@ public sealed partial class MainWindow
         }
     }
 
-    /// <summary>
-    /// A player-facing sentence per drop stage. The enum name is the developer's answer;
-    /// this is the user's.
-    /// </summary>
+    // A player-facing sentence per drop stage.
     private static string DropReason(DropStage stage) => stage switch
     {
         DropStage.PlaybackOff => "playback is switched off in settings",
@@ -236,8 +216,6 @@ public sealed partial class MainWindow
         SinkMode.ManagedOnly => "Warcry's built-in player",
         _ => "nothing (output is switched off)",
     };
-
-    // ------------------------------------------------------------------ details
 
     private void DrawDetectionDetail()
     {
@@ -262,14 +240,10 @@ public sealed partial class MainWindow
         ImGui.TextUnformatted($"  Events seen   {this.plugin.Diag.TotalSeen}");
     }
 
-    /// <summary>
-    /// What the plugin has silenced, and on what grounds.
-    /// </summary>
-    /// <remarks>
-    /// A suppression the user cannot see is indistinguishable from Warcry having broken
-    /// their game audio, which is why the last match is shown whole — path, group and how
-    /// far the emitter was from the caster it was attributed to.
-    /// </remarks>
+    // What the plugin has silenced, and on what grounds. A suppression the user cannot see
+    // is indistinguishable from Warcry having broken their game audio, so the last match is
+    // shown whole: path, group, and how far the emitter was from the caster it was
+    // attributed to.
     private void DrawGruntDetail()
     {
         var g = this.plugin.Grunts;
@@ -307,9 +281,8 @@ public sealed partial class MainWindow
                 ? "blanket"
                 : $"{g.LastMatchDistance:0.00}y from the caster";
 
-            // The age is what makes this checkable in game: press a mapped action and this
-            // has to read a fraction of a second, or the grunt you just heard was not ours
-            // to silence.
+            // The age makes this checkable in game: press a mapped action and it has to read
+            // a fraction of a second, or the grunt you just heard was not ours to silence.
             var age = (DateTime.Now - g.LastAt).TotalSeconds;
             ImGui.TextDisabled(
                 $"                last: {g.LastPath}");
@@ -351,8 +324,7 @@ public sealed partial class MainWindow
             ImGui.TextUnformatted(
                 $"  Pool          {native.Released} released, {native.Forced} forced, {native.Orphaned} orphaned");
 
-            // The two ways following fails look identical from the speakers, so name them
-            // apart here rather than leaving it to be guessed at again.
+            // The two ways following fails sound identical, so name them apart here.
             if (native.Moves == 0 && composite.NativePlays > 0)
             {
                 ImGui.TextUnformatted(
@@ -361,8 +333,8 @@ public sealed partial class MainWindow
             }
             else if (native.Moves > 0 && native.DriverMoves == 0)
             {
-                // Writing the SoundData record alone is measurably inaudible, so this
-                // combination is the difference between working and looking like it works.
+                // Writing the SoundData record alone is inaudible, so this combination is
+                // the difference between working and looking like it works.
                 ImGui.TextUnformatted(
                     "                ⚠ updates are being written but none reach the audio driver, " +
                     "so nothing will move. See the log, and use Stays where it started until it is fixed.");
@@ -457,8 +429,8 @@ public sealed partial class MainWindow
         sb.AppendLine("Warcry diagnostics");
         sb.AppendLine($"hookInstalled={this.plugin.Watcher.Installed} tripped={this.plugin.Watcher.Tripped} eventsSeen={this.plugin.Diag.TotalSeen}");
 
-        // The pool counters belong in a pasted report, not only on screen: "it went quiet
-        // after a while" and "orphaned climbs by one per line" are the same bug report.
+        // The pool counters belong in a pasted report: "it went quiet after a while" and
+        // "orphaned climbs by one per line" are the same bug.
         var nativeSink = this.plugin.Composite.Native;
         sb.AppendLine(
             $"sink={this.plugin.Config.Sink} voicePosition={this.plugin.Config.VoicePosition} " +
@@ -475,7 +447,7 @@ public sealed partial class MainWindow
             $"armed={grunts.ArmedCount} lastGroup={grunts.LastSoundNumber} lastDistance={grunts.LastMatchDistance:0.00}");
 
         // Which tiers are on decides whether a "nothing plays" report is a bug at all, and
-        // the crowd numbers decide whether a "it goes quiet in raids" one is.
+        // the crowd numbers decide the same for "it goes quiet in raids".
         var cfg = this.plugin.Config;
         sb.AppendLine(
             $"audience={cfg.Audience} named={cfg.NamedPeople.Count} blocked={cfg.BlockedPeople.Count} " +

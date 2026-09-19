@@ -3,15 +3,9 @@ using NAudio.Wave;
 
 namespace Warcry.Audio;
 
-/// <summary>
-/// The synthesised beep: <c>/warcry test</c>, the Status tab's "Play a test sound", and
-/// the fallback for an action with nothing mapped to it (<c>FallBackToTestTone</c>).
-/// </summary>
-/// <remarks>
-/// Deliberately enveloped: a raw sine gated on and off clicks audibly, and that same
-/// click is what a 5 ms ramp fixes on real clips. Getting it right here means the
-/// ramp behaviour is already proven when real audio arrives.
-/// </remarks>
+// The synthesised beep: /warcry test, the Status tab's test sound, and the fallback for an
+// action with nothing mapped to it. Enveloped because a raw sine gated on and off clicks —
+// the same 5 ms ramp real clips need.
 public sealed class TestTone : ISampleProvider
 {
     public const int SampleRate = 44100;
@@ -56,7 +50,6 @@ public sealed class TestTone : ISampleProvider
                 this.phase -= Math.PI * 2;
             }
 
-            // Linear attack, exponential decay.
             var attack = this.position < this.attackSamples
                 ? (float)this.position / this.attackSamples
                 : 1f;

@@ -4,20 +4,13 @@ using Warcry.Game;
 
 namespace Warcry.Gating;
 
-/// <summary>
-/// What a caster is to you, and whether that is enough to be heard.
-/// </summary>
-/// <param name="Membership">
-/// EVERY bucket the caster belongs to — a friend in your party is <c>Party | Friend</c>.
-/// This is what a profile's target is matched against, so a profile aimed at your party
-/// fires for a party member whatever else they also are.
-/// </param>
-/// <param name="Primary">
-/// The narrowest bucket that both applies and is switched on, used for the cooldown tier
-/// and for what the Events tab shows. When nothing is switched on it is the narrowest that
-/// applies, so a refused row can still say who they were.
-/// </param>
-/// <param name="Refusal">Why this caster is not heard, or empty. Always a literal.</param>
+// What a caster is to you, and whether that is enough to be heard.
+// Membership is EVERY bucket the caster belongs to — a friend in your party is
+// Party | Friend — and is what a profile's target is matched against.
+// Primary is the narrowest bucket that both applies and is switched on, used for the
+// cooldown tier and the Events tab. When nothing is switched on it is the narrowest that
+// applies, so a refused row can still say who they were.
+// Refusal is always a literal, empty when the caster is heard.
 public readonly record struct AudienceVerdict(
     AudienceBucket Membership,
     AudienceBucket Primary,
@@ -25,30 +18,21 @@ public readonly record struct AudienceVerdict(
 {
     public bool Admitted => this.Refusal.Length == 0;
 
-    /// <summary>
-    /// A cast that never reached the filter — not a player, or not an action.
-    /// </summary>
-    /// <remarks>
-    /// Distinct from a refusal so the Events tab can leave the audience column blank for
-    /// rows the filter was never asked about, rather than inventing a reason for them.
-    /// </remarks>
+    // A cast that never reached the filter — not a player, or not an action. Distinct from
+    // a refusal so the Events tab can leave the audience column blank rather than inventing
+    // a reason.
     public static readonly AudienceVerdict Unclassified =
         new(AudienceBucket.None, AudienceBucket.None, "not a player action");
 }
 
-/// <summary>
-/// Decides whose actions are heard. This is the caster seam docs/PLAN.md 5.3 describes,
-/// and the only place allowed to answer "should this person play a line".
-/// </summary>
-/// <remarks>
-/// <para>Every input it reads was populated by the server on the spawned object and copied
-/// into a <see cref="CasterFacts"/> — by the detour on the cast path, by the crowd scan
-/// once a second — so classification is a handful of integer compares with no object-table
-/// lookup and no allocation, and both callers get the same answer.</para>
-/// <para>The named and blocked lists are held as precomputed 64-bit hash sets, rebuilt only
-/// when the lists are edited. Every mutation goes through this class for that reason —
-/// editing <c>Configuration.NamedPeople</c> directly would leave the sets stale.</para>
-/// </remarks>
+// Decides whose actions are heard: the caster seam of docs/PLAN.md 5.3, and the only place
+// allowed to answer "should this person play a line".
+// Every input arrives in a CasterFacts, so classification is a handful of integer compares
+// with no object-table lookup and no allocation, and the detour and the crowd scan get the
+// same answer.
+// The named and blocked lists are precomputed 64-bit hash sets rebuilt only on edit, so
+// every mutation must go through this class — editing Configuration.NamedPeople directly
+// leaves the sets stale.
 public sealed class AudienceFilter
 {
     private readonly Configuration config;
@@ -66,10 +50,10 @@ public sealed class AudienceFilter
         this.Rebuild();
     }
 
-    /// <summary>True when anything but your own actions can be heard.</summary>
+    // True when anything but your own actions can be heard.
     public bool HearsAnyoneElse => (this.config.Audience & ~AudienceBucket.Self) != 0;
 
-    /// <summary>Recomputes the name hash sets. Call after any edit to either list.</summary>
+    // Call after any edit to either list.
     public void Rebuild()
     {
         this.namedAnyWorld.Clear();
@@ -113,15 +97,11 @@ public sealed class AudienceFilter
 
     public void RemoveBlocked(NamedPlayer player) => this.Remove(this.config.BlockedPeople, player);
 
-    /// <summary>Is this name on the named list, on any world?</summary>
     public bool IsNamed(string name) => Holds(this.namedAnyWorld, this.namedOnWorld, name);
 
-    /// <summary>Is this name on the blocked list, on any world?</summary>
     public bool IsBlocked(string name) => Holds(this.blockedAnyWorld, this.blockedOnWorld, name);
 
-    /// <summary>
-    /// Classifies one cast. Never throws and never allocates.
-    /// </summary>
+    // Never throws and never allocates.
     public AudienceVerdict Classify(in CasterFacts facts)
     {
         if (facts.IsSelf)
@@ -157,7 +137,7 @@ public sealed class AudienceFilter
         return new AudienceVerdict(membership, Narrowest(enabled), string.Empty);
     }
 
-    /// <summary>Seconds this tier must wait between lines from the same person.</summary>
+    // Seconds this tier must wait between lines from the same person.
     public float CooldownFor(AudienceBucket primary) => primary switch
     {
         AudienceBucket.Self => this.config.SelfCooldownSeconds,
@@ -167,18 +147,12 @@ public sealed class AudienceFilter
         _ => this.config.OtherCooldownSeconds,
     };
 
-    /// <summary>Volume trim for this tier. Only your own lines play untrimmed.</summary>
+    // Only your own lines play untrimmed.
     public float GainFor(AudienceBucket primary)
         => primary == AudienceBucket.Self ? 1f : this.config.OtherPlayerGain;
 
-    /// <summary>
-    /// Every bucket this caster belongs to.
-    /// </summary>
-    /// <remarks>
-    /// A set rather than a first-match winner. Classifying a friend who is also in your
-    /// party as Party alone would make "play lines for friends" silently skip them, which
-    /// is the single most confusing thing this filter could do.
-    /// </remarks>
+    // A set, not a first match: classifying a friend who is also in your party as Party
+    // alone would make "play lines for friends" silently skip them.
     public AudienceBucket MembershipOf(in CasterFacts facts)
     {
         if (facts.IsSelf)
@@ -211,7 +185,7 @@ public sealed class AudienceFilter
         return membership;
     }
 
-    /// <summary>Does the user listen to anyone in this membership set?</summary>
+    // Does the user listen to anyone in this membership set?
     public bool Admits(AudienceBucket membership)
         => (membership & this.config.Audience) != AudienceBucket.None;
 
@@ -225,7 +199,7 @@ public sealed class AudienceFilter
            && (this.blockedAnyWorld.Contains(facts.NameHash)
                || this.blockedOnWorld.Contains((facts.NameHash, facts.HomeWorld)));
 
-    /// <summary>The narrowest bucket in a set — the one that describes fewest people.</summary>
+    // The bucket in the set that describes fewest people.
     private static AudienceBucket Narrowest(AudienceBucket set)
     {
         foreach (var bucket in Audience.ClassifyOrder)
@@ -270,7 +244,7 @@ public sealed class AudienceFilter
         }
     }
 
-    /// <summary>On the list under any world, from the hashes <see cref="Rebuild"/> precomputed.</summary>
+    // On the list under any world, from the hashes Rebuild precomputed.
     private static bool Holds(HashSet<ulong> anyWorld, HashSet<(ulong Name, uint World)> onWorld, string name)
     {
         var hash = PlayerId.Of(name);

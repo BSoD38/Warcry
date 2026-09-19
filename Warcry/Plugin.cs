@@ -21,7 +21,7 @@ public sealed class Plugin : IDalamudPlugin
 {
     private const string CommandName = "/warcry";
 
-    // NOTE: [PluginService] is AttributeTargets.Property. A FIELD will not compile.
+    // [PluginService] is AttributeTargets.Property. A FIELD will not compile.
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static IPluginLog             Log         { get; private set; } = null!;
     [PluginService] internal static IFramework             Framework   { get; private set; } = null!;
@@ -54,56 +54,49 @@ public sealed class Plugin : IDalamudPlugin
 
     public Gates Gates { get; }
 
-    /// <summary>Whose actions are heard. The caster seam — see docs/PLAN.md 5.3.</summary>
+    // Whose actions are heard. The caster seam — see docs/PLAN.md 5.3.
     public AudienceFilter Audience { get; }
 
-    /// <summary>Once-a-second read of who is nearby and what they are playing.</summary>
+    // Once-a-second read of who is nearby and what they are playing.
     public CrowdWatch Crowd { get; }
 
     public Throttle Throttle { get; }
 
-    /// <summary>The sink everything routes through; it owns the native and managed leaves.</summary>
+    // The sink everything routes through; it owns the native and managed leaves.
     public CompositeVoiceSink Composite { get; }
 
-    /// <summary>Encodes clips into game-loadable <c>.scd</c> and owns their redirects.</summary>
+    // Encodes clips into game-loadable .scd and owns their redirects.
     public ScdForge Forge { get; }
 
-    /// <summary>Job-membership answers, shared by the editor's filter and the warm scoping.</summary>
+    // Job-membership answers, shared by the editor's filter and the warm scoping.
     public JobIndex Jobs { get; }
 
-    /// <summary>Compiles every mapping ahead of time and keeps the current job's set warm.</summary>
+    // Compiles every mapping ahead of time and keeps the active jobs' set warm.
     public PackBuilder Packs { get; }
 
     public PlaybackScheduler Scheduler { get; }
 
-    /// <summary>Keeps the game's own battle grunt from doubling up with ours.</summary>
+    // Keeps the game's own battle grunt from doubling up with ours.
     public GruntSuppressor Grunts { get; }
 
     public PenumbraBridge Penumbra { get; }
 
-    /// <summary>Action id of the last local cast, so "Use last action" can fill the editor.</summary>
+    // So "Use last action" can fill the editor.
     public uint LastLocalCastActionId { get; private set; }
 
-    /// <summary>
-    /// Every action id seen firing from the local player. The Action sheet is full of
-    /// duplicates and unused rows, so this is the only reliable answer to "which id does
-    /// this button actually use".
-    /// </summary>
+    // Every action id seen firing from the local player. The Action sheet is full of
+    // duplicates and unused rows, so this is the only reliable answer to "which id does this
+    // button actually use".
     public HashSet<uint> ObservedActions { get; } = [];
 
     private bool observedDirty;
     private double nextObservedFlush = double.PositiveInfinity;
 
-    /// <summary>
-    /// How long after learning a new action to persist the list.
-    /// </summary>
-    /// <remarks>
-    /// Observed actions used to be written only in <see cref="Dispose"/>, so a game crash
-    /// lost everything learned that session — and any mid-session <c>Config.Save()</c> from
-    /// the settings UI wrote the stale list back over it. Debounced rather than immediate
-    /// because <c>SavePluginConfig</c> is synchronous, and because new actions arrive in
-    /// bursts when you first play a job.
-    /// </remarks>
+    // How long after learning a new action to persist the list. Debounced rather than
+    // immediate because SavePluginConfig is synchronous and new actions arrive in bursts
+    // when you first play a job; persisted rather than left to Dispose because a crash
+    // would lose the session, and a mid-session Config.Save() would write the stale list
+    // back over it.
     private const double ObservedFlushSeconds = 10.0;
 
     private readonly WindowSystem windows = new("Warcry");
@@ -182,10 +175,8 @@ public sealed class Plugin : IDalamudPlugin
             this.Composite.Status);
     }
 
-    /// <summary>
-    /// Called on the game main thread from inside the ActionEffect detour: gates,
-    /// throttles, resolves a clip and schedules it.
-    /// </summary>
+    // Called on the game main thread from inside the ActionEffect detour: gates, throttles,
+    // resolves a clip and schedules it.
     private void OnCast(in CastEvent ev, DropStage drop, string casterName)
     {
         if (!this.Config.Enabled)
@@ -220,8 +211,8 @@ public sealed class Plugin : IDalamudPlugin
 
         if (!this.Config.PlayTestToneOnActions)
         {
-            // Counted rather than returned silently. This is the commonest cause of
-            // "I hear nothing", and it used to leave no trace anywhere in the UI.
+            // Counted rather than returned silently: this is the commonest cause of "I hear
+            // nothing".
             this.Diag.Drop(DropStage.PlaybackOff);
             return;
         }
@@ -324,25 +315,24 @@ public sealed class Plugin : IDalamudPlugin
             // nor, for anyone but you, a token from the global rate cap.
             this.Throttle.Mark(ev.CasterEntityId, verdict.Primary);
 
-            // Armed at snapshot rather than at playback, and deliberately: the game's grunt
-            // is animation-driven, 5-1071 ms after this point, so it can land well before
-            // our own line finishes waiting out the cast bar. Arming later would miss the
-            // fast half of that range. Nothing is armed for a cast we are not voicing.
+            // Armed at snapshot rather than at playback: the game's grunt is
+            // animation-driven, 5-1071 ms after this point, so it can land well before our
+            // own line finishes waiting out the cast bar. Nothing is armed for a cast we are
+            // not voicing.
             this.Grunts.Arm(ev.CasterEntityId, ev.Position);
         }
         else
         {
             // SinkRefused: every sink said no — at the concurrency cap, muted by the game's
             // own sliders, or no output device. TooFarOut: no sink was asked at all, because
-            // the cast bar ran past the scheduler's ceiling. Both were previously invisible
-            // — the row read "ok" and nothing came out of the speakers.
+            // the cast bar ran past the scheduler's ceiling.
             this.Diag.Drop(refusal == ScheduleRefusal.TooFarOut
                 ? DropStage.TooFarOut
                 : DropStage.SinkRefused);
         }
     }
 
-    /// <summary>The local player's job, refreshed once per frame beside the position.</summary>
+    // Refreshed once per frame beside the position.
     public uint CachedJobId { get; private set; }
 
     private void OnFrameworkUpdate(IFramework framework)
@@ -377,7 +367,7 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    /// <summary>Persists the learned action list. Cheap no-op when nothing has changed.</summary>
+    // No-op when nothing has changed.
     private void FlushObservedActions()
     {
         if (!this.observedDirty)
@@ -391,7 +381,7 @@ public sealed class Plugin : IDalamudPlugin
         this.nextObservedFlush = double.PositiveInfinity;
     }
 
-    // NOTE: Action<uint> at API 15 — this was Action<ushort> in older Dalamud.
+    // Action<uint> at API 15 — Action<ushort> in older Dalamud.
     private void OnTerritoryChanged(uint territory)
     {
         // A voiceline arriving after a loading screen is worse than none at all — and a
@@ -424,17 +414,10 @@ public sealed class Plugin : IDalamudPlugin
         this.ToggleMainUi();
     }
 
-    /// <summary>
-    /// The first reason nothing would be heard right now, or empty if nothing is blocking.
-    /// </summary>
-    /// <remarks>
-    /// <para>"I don't hear the sounds I mapped" has about eight distinct causes, most of
-    /// them switches the user set themselves. Working through them by hand means knowing
-    /// which of eight places to look, so this checks them in the order the pipeline does
-    /// and names the first one that would stop a line.</para>
-    /// <para>Ordered deliberately: the checks a user can fix come before the ones they
-    /// cannot.</para>
-    /// </remarks>
+    // The first reason nothing would be heard right now, or empty if nothing is blocking.
+    // "I don't hear the sounds I mapped" has about eight distinct causes, most of them
+    // switches the user set themselves, so this checks them in the order the pipeline does
+    // and names the first one that would stop a line. The checks a user can fix come first.
     public string ExplainSilence()
     {
         if (!this.Config.Enabled)
@@ -512,8 +495,7 @@ public sealed class Plugin : IDalamudPlugin
 
         // The one counter-derived answer kept here: it fires when your own actions are off
         // but somebody else's are on, which reads as "nothing works" rather than as a
-        // setting. Every other drop counter is listed, in full and in plain language, by
-        // the Status tab's "Lines that did not play" — no need to rank them twice.
+        // setting. Every other drop counter is listed by the Status tab.
         if ((this.Config.Audience & Game.AudienceBucket.Self) == 0)
         {
             return "\"Me\" is off on the People tab, so your own actions never play. " +
@@ -524,22 +506,16 @@ public sealed class Plugin : IDalamudPlugin
         return string.Empty;
     }
 
-    /// <summary>The synthesised tone is deterministic, so it caches like any other clip.</summary>
+    // The synthesised tone is deterministic, so it caches like any other clip.
     public const string TestToneKey = "warcry:testtone:v1";
 
-    /// <summary>
-    /// Identity of one exact rendering of a clip.
-    /// </summary>
-    /// <remarks>
-    /// Every parameter that changes a sample has to be in here. The native sink
-    /// content-addresses encoded files by this key and will serve a later request the
-    /// earlier one's bytes, so a missing parameter means the wrong audio plays — quietly,
-    /// and only for mappings that differ solely by the parameter that was left out.
-    /// <para>Public because <see cref="Native.PackBuilder"/> must enumerate, ahead of
-    /// time, the exact keys this method will produce at cast time. Invariant culture,
-    /// always: the rate would otherwise format as "1,0000" on a French client, and the
-    /// builder parses the format back.</para>
-    /// </remarks>
+    // Identity of one exact rendering of a clip. Every parameter that changes a sample has
+    // to be in here: the native sink content-addresses encoded files by this key and will
+    // serve a later request the earlier one's bytes, so a missing parameter means the wrong
+    // audio plays, quietly, and only for mappings that differ solely by it.
+    // Public because PackBuilder must enumerate ahead of time the exact keys this produces
+    // at cast time. Invariant culture always — the rate would otherwise format as "1,0000"
+    // on a French client, and the builder parses the format back.
     public static string VariantKey(string hash, float rate, PitchMode mode, int fftSize)
     {
         // The FFT size is a phase-vocoder parameter; varispeed never reads it. Left in
@@ -556,7 +532,7 @@ public sealed class Plugin : IDalamudPlugin
             $"{hash}:{rate:0.0000}:{(byte)mode}:{fftSize}");
     }
 
-    /// <summary>Fires a tone at your own position, through the full gain chain.</summary>
+    // A tone at your own position, through the full gain chain.
     public void PlayTestTone()
     {
         var lp = Objects.LocalPlayer;
@@ -576,16 +552,10 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    /// <summary>
-    /// Every action id that currently resolves to <paramref name="actionId"/>, so a
-    /// mapping survives level sync and variant content.
-    /// </summary>
-    /// <remarks>
-    /// <c>GetAdjustedActionId</c> answers "what does this action become right now",
-    /// accounting for level, sync, traits and transformations. There is no reverse
-    /// lookup, so the family is found by scanning player actions and asking each one.
-    /// Level-dependent, hence captured at assign time and stored rather than recomputed.
-    /// </remarks>
+    // Every action id that currently resolves to actionId, so a mapping survives level sync
+    // and variant content. GetAdjustedActionId answers "what does this action become right
+    // now" and has no reverse lookup, so the family is found by scanning player actions and
+    // asking each one. Level-dependent, hence captured at assign time and stored.
     public unsafe HashSet<uint> BuildActionFamily(uint actionId)
     {
         var family = new HashSet<uint> { actionId };
@@ -619,20 +589,17 @@ public sealed class Plugin : IDalamudPlugin
         return family;
     }
 
-    /// <summary>Language-independent name, used as a stable identity for mappings.</summary>
+    // A stable, language-independent identity for mappings.
     public static string EnglishActionName(uint actionId)
     {
         var sheet = Data.GetExcelSheet<Lumina.Excel.Sheets.Action>(Dalamud.Game.ClientLanguage.English);
         return sheet.TryGetRow(actionId, out var row) ? row.Name.ExtractText() : string.Empty;
     }
 
-    /// <summary>Auditions one clip at your own position.</summary>
-    /// <remarks>
-    /// Straight to the managed sink, never the composite: a preview must work before any
-    /// compile has happened, must not depend on Penumbra, and must never spend one of the
-    /// native path's voices. It is a preview of the clip, not a test of the pipeline —
-    /// <c>/warcry test</c> is the pipeline test.
-    /// </remarks>
+    // Auditions one clip at your own position. Straight to the managed sink, never the
+    // composite: a preview must work before any compile has happened, must not depend on
+    // Penumbra, and must never spend one of the native path's voices. /warcry test is the
+    // pipeline test.
     public void PlayClip(CachedClip clip, float rate = 1f, PitchMode mode = PitchMode.Varispeed, int fftSize = 2048)
     {
         var lp = Objects.LocalPlayer;

@@ -8,19 +8,12 @@ using Warcry.Clips;
 
 namespace Warcry.Audio;
 
-/// <summary>
-/// The default sink: NAudio mixer out to the default device, with gain taken from the
-/// game's own volume sliders so it behaves like game audio rather than a separate app.
-/// </summary>
-/// <remarks>
-/// <para>Threading: <see cref="TryPlay"/> runs on the game main thread; the mixer pulls
-/// on NAudio's own thread. <c>MixingSampleProvider</c> locks its source list internally,
-/// and that lock is held only for the duration of a mix, so calling AddMixerInput from
-/// the game thread is safe and bounded.</para>
-/// <para>Wine/Linux: WASAPI paths are known to fail under Proton, so branch to
-/// DirectSound. The native sink, if it ever lands, is unaffected by this — a genuine
-/// argument in its favour.</para>
-/// </remarks>
+// NAudio mixer out to the default device, with gain taken from the game's own volume
+// sliders so it behaves like game audio rather than a separate app.
+// TryPlay runs on the game main thread; the mixer pulls on NAudio's own thread.
+// MixingSampleProvider locks its source list internally and holds that lock only for the
+// duration of a mix, so AddMixerInput from the game thread is safe and bounded.
+// WASAPI fails under Proton, hence the DirectSound branch.
 public sealed class ManagedVoiceSink : IDisposable
 {
     private readonly IPluginLog log;
@@ -30,13 +23,9 @@ public sealed class ManagedVoiceSink : IDisposable
     private IWavePlayer? output;
     private MixingSampleProvider? mixer;
 
-    /// <summary>
-    /// Interlocked only: incremented on the game thread in <see cref="TryPlay"/>,
-    /// decremented on NAudio's output thread in <see cref="OnInputEnded"/>
-    /// (MixerInputEnded is raised from inside MixingSampleProvider.Read). A plain
-    /// <c>++</c>/<c>--</c> pair here loses updates, and a lost decrement is permanent —
-    /// enough of them and the cap check refuses every line for the rest of the session.
-    /// </summary>
+    // Interlocked only: incremented on the game thread in TryPlay, decremented on NAudio's
+    // output thread in OnInputEnded. A plain ++/-- pair loses updates, and a lost decrement
+    // is permanent — enough of them and the cap check refuses every line for the session.
     private int activeVoices;
 
     public ManagedVoiceSink(IPluginLog log, GameVolume volume, Configuration config)
@@ -83,15 +72,8 @@ public sealed class ManagedVoiceSink : IDisposable
 
     public int ActiveVoices => Volatile.Read(ref this.activeVoices);
 
-    /// <summary>
-    /// Why the last request was not played, or empty if it was.
-    /// </summary>
-    /// <remarks>
-    /// Mirrors <see cref="NativeVoiceSink.LastRefusal"/>, and for the same reason. Without
-    /// it the router had nothing to report but <see cref="Status"/> — the output device's
-    /// name — so "why did nothing play" answered itself with "Managed (NAudio / WaveOut)".
-    /// Three quite different causes were collapsed into one non-answer.
-    /// </remarks>
+    // Empty if the last request played. Mirrors NativeVoiceSink.LastRefusal, so the router
+    // can report a cause rather than just the output device's name.
     public string LastRefusal { get; private set; } = string.Empty;
 
     public bool TryPlay(in VoiceRequest request)
@@ -104,8 +86,8 @@ public sealed class ManagedVoiceSink : IDisposable
 
         if (Volatile.Read(ref this.activeVoices) >= this.config.MaxConcurrent)
         {
-            // Hard cap. Not a taste call: the game's SoundData pool is 256 entries shared
-            // with the whole client, and the Voice bus has only 5 tracks.
+            // Hard cap: the game's SoundData pool is 256 entries shared with the whole
+            // client, and the Voice bus has only 5 tracks.
             this.LastRefusal = $"at the concurrency cap ({this.config.MaxConcurrent})";
             return false;
         }
@@ -170,8 +152,7 @@ public sealed class ManagedVoiceSink : IDisposable
         finally
         {
             // RemoveAllMixerInputs does not raise MixerInputEnded, so the count has to be
-            // zeroed by hand. A lost decrement is permanent: enough of them and the cap
-            // check refuses every line for the rest of the session.
+            // zeroed by hand.
             Interlocked.Exchange(ref this.activeVoices, 0);
         }
     }
@@ -206,8 +187,8 @@ public sealed class ManagedVoiceSink : IDisposable
 
     public void Dispose()
     {
-        // An orphaned IWavePlayer survives plugin unload and keeps making noise.
-        // That is a classic Dalamud bug report; tear down in order.
+        // An orphaned IWavePlayer survives plugin unload and keeps making noise, so tear
+        // down in order.
         try
         {
             if (this.mixer is not null)
